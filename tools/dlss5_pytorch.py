@@ -289,6 +289,31 @@ def decode_post_output_tile_column_major(tile: Tensor, output_channels: int = 3)
     return leading.reshape(32, output_channels).transpose(0, 1).contiguous()
 
 
+def decode_hmma_16816_f16_tile(tile: Tensor) -> Tensor:
+    """Decode one physical FP16 tile used by ``HMMA.16816``.
+
+    The pre front-end loads 32 lanes x 8 half values with one 128-bit load
+    per lane.  For the ``m16n8k16`` B fragment, each lane contributes rows
+    ``2*t, 2*t+1, 8+2*t, 9+2*t`` at column ``lane >> 2``.  The low and high
+    four-half groups in a lane are two independent ``16x8`` B fragments.
+    The returned matrix is the logical ``K=16, N=16`` tile obtained by
+    placing those two fragments side by side.
+    """
+
+    if tuple(tile.shape) != (16, 16):
+        raise ValueError(f"HMMA front tile must have shape (16, 16), got {tuple(tile.shape)}")
+    physical = tile.flatten().view(32, 8)
+    logical = tile.new_zeros((16, 16))
+    for lane in range(32):
+        group = lane >> 2
+        thread = lane & 3
+        rows = (2 * thread, 2 * thread + 1, 8 + 2 * thread, 9 + 2 * thread)
+        for fragment, start in enumerate((0, 4)):
+            for offset, row in enumerate(rows):
+                logical[row, group + fragment * 8] = physical[lane, start + offset]
+    return logical
+
+
 # The fused kernels use ``MpCubicSiluActivation`` rather than GELU.  These
 # are the exact half constants embedded in the sm_86/sm_120 SASS path.  The
 # expression is written in the same order as the host op list:
@@ -1127,8 +1152,9 @@ class DLSS5Graph(nn.Module):
     confirmed 3 input channels.  ``pre_features=`` is an advanced hook for
     the 32-channel tensor produced by the unresolved CUDA texture front-end;
     when supplied, it enters the C32 body through an identity adapter.  The
-    more precise ``pre_front_features=`` hook accepts the 16-channel tensor
-    before the serialized FP16 front projection and applies both tiles.
+    more precise ``pre_front_features=`` hook accepts the 15-channel tensor
+    before the serialized FP16 front projection (or 16 channels with the
+    final alignment lane present) and applies both tiles.
     """
 
     def __init__(
@@ -1284,16 +1310,23 @@ class DLSS5Graph(nn.Module):
         if pre_features is not None and pre_front_features is not None:
             raise ValueError("pre_features and pre_front_features are mutually exclusive")
         if pre_front_features is not None:
-            if pre_front_features.ndim != 4 or pre_front_features.shape[1] != 16:
-                raise ValueError("pre_front_features must be NCHW with exactly 16 channels")
+            if pre_front_features.ndim != 4 or pre_front_features.shape[1] not in {15, 16}:
+                raise ValueError("pre_front_features must be NCHW with 15 logical channels (or 16 with padding)")
             if pre_front_features.shape[0] != rgb.shape[0] or pre_front_features.shape[2:] != rgb.shape[2:]:
                 raise ValueError("pre_front_features must have the same batch and spatial shape as rgb")
-            front_weight = torch.cat(
-                (self.pre_front_weight0_f16, self.pre_front_weight1_f16), dim=0
-            ).to(device=pre_front_features.device, dtype=pre_front_features.dtype)
+            front_tile0 = decode_hmma_16816_f16_tile(self.pre_front_weight0_f16)
+            front_tile1 = decode_hmma_16816_f16_tile(self.pre_front_weight1_f16)
+            # The last logical K row is all-zero in both decoded tiles and is
+            # the HMMA alignment lane. Keep the public hook at the logical
+            # K=15 contract while accepting a caller-provided padded lane.
+            front_weight = torch.cat((front_tile0, front_tile1), dim=1)[:15]
+            front_weight = front_weight.transpose(0, 1).contiguous().to(
+                device=pre_front_features.device,
+                dtype=pre_front_features.dtype,
+            )
             x = _fp8_boundary(
                 self,
-                F.conv2d(pre_front_features, front_weight.view(32, 16, 1, 1)),
+                F.conv2d(pre_front_features[:, :15], front_weight.view(32, 15, 1, 1)),
             )
         elif pre_features is None:
             x = _fp8_boundary(self, self.input_adapter(rgb))

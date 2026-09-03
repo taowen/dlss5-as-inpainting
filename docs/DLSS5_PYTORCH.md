@@ -105,8 +105,8 @@ out = net(rgb=rgb, control_mask=mask)
 # NCHW 32-channel body feature tile 显式送入 pre body：
 out = net(rgb=rgb, pre_features=pre_features, control_mask=mask)
 
-# 如果只重建到 16-channel TEX feature，模型会执行两个 serialized
-# 16x16 FP16 front tile -> 32-channel E4M3 projection：
+# 如果只重建到 15-channel TEX feature（第 16 个 HMMA lane 是 padding），
+# 模型会执行两个 serialized 16x16 FP16 front tile -> 32-channel E4M3 projection：
 out = net(rgb=rgb, pre_front_features=pre_front_features, control_mask=mask)
 
 # 如果要把外围 temporal feature 先拼好再送入参考图，显式指定输入宽度；
@@ -134,7 +134,7 @@ out = temporal_net(color, history=previous_output, motion=motion, control_mask=m
 | Split FinalHead | layer4 | FP8 `(1024,512)` pointwise weight + 16 bytes padding；FinalHead 作用于 `ProjPool` 的 2×2 pooled 512-channel output；host 的第二 convolution slot 在 cubin/record 中无独立权重，reference 按 identity 表达 |
 | 普通/transition Swin | layer0 | `weight1/2` FP8，FFN 宽度 `128/224/384/704`；`qkv/projection` FP8；per-head `attn_scale` FP32；两组 `cos_skip` 和 `attn_bias` FP16。ordinary 总长 `20672/61760/197184/689232`，down/up body 及 transition matrix 也已接入 |
 | Post block70 | layer0 | 前置 `dw_weight(32,)` 与 `inp_upsample_input_scale(32,)` FP16、C32 body 的 `weight1/2/qkv/projection/cos_skip/attn_bias`、FP32 `attn_scale`，以及按注册顺序拆出的 `out_gain(8×FP16)` + padded FP16 `out_conv_weight(16×32)` 已接入；sm_120 的两次 512-half global load 与 native golden 回归支持将前 96 half 按 `K=32,N=3` column-major 重解释，默认使用 `post_output_layout="column_major_prefix"`；`raw` 与 `tensor_core_candidate` 仍保留作对照；`out_gain` 当前 8 个值全为 0 |
-| Pre block0 | layer0 | C32 body 的 `weight1/weight2` 从 record offset `0/4096` 读取；sm_120 SASS 在 body 前另读 `+0x2010/+0x2210` 两块 `16×16` FP16 front tile，`pre_front_features` 会将其作为一个 `32×16` projection 执行，TEX feature producer 尚未解出；没有 front-end 时使用明确标注的零 RGB fallback；block0 output0 是无参数 2×2 pool |
+| Pre block0 | layer0 | C32 body 的 `weight1/weight2` 从 record offset `0/4096` 读取；sm_120 SASS 在 body 前另读 `+0x2010/+0x2210` 两块 `16×16` FP16 front tile，按 HMMA fragment 解码后是 `32×15` projection（第 16 个 K lane 全零 padding），`pre_front_features` 可执行该 projection，TEX feature producer 尚未解出；没有 front-end 时使用明确标注的零 RGB fallback；block0 output0 是无参数 2×2 pool |
 | Decoder input block39 | layer0 | FP8 `(512,1024)` projection + FP16 `(512,)` channel scale；`sin/tile` 插值路径用 bilinear reference 表达 |
 
 普通 Swin 的 `attn_bias` 起始偏移已校正为 `11360/41120/147744/557600`（C=32/64/128/256）；`projection` 起始偏移为 `19568/57520/180528/623168`。bias 结束到 projection 开始的 `16/16/16/32` 字节不是 opaque gap，而是 `1/2/4/8` 个 FP32 per-head `attn_scale`，其余字节为对齐 padding。up body、pre 和 post 也按相同规则接入了 scale；up body 的前置 `2*C²` 区和 QKV 前的 `sin/opaque` 区仍只记录在 report 中。
