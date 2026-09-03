@@ -211,6 +211,12 @@ def quantize_s_e4m3_satfinite(values: Tensor) -> Tensor:
     return finite.to(torch.float8_e4m3fn).to(values.dtype)
 
 
+def _fp8_boundary(module: nn.Module, values: Tensor) -> Tensor:
+    if getattr(module, "_emulate_fp8", False):
+        return quantize_s_e4m3_satfinite(values)
+    return values
+
+
 def decode_fp8_matrix(
     values: bytes | Tensor,
     shape: tuple[int, ...],
@@ -759,9 +765,9 @@ class WindowCosineAttention(nn.Module):
         x, h, w = _pad_nhwc(x, self.window_size)
         if self.shift_size:
             x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-        qkv = self.qkv(x)
+        qkv = _fp8_boundary(self, self.qkv(x))
         mask = _shift_mask(h, w, self.window_size, self.shift_size, x.device)
-        out = self._attend(qkv, h, w, mask)
+        out = _fp8_boundary(self, self._attend(qkv, h, w, mask))
         if self.shift_size:
             out = torch.roll(out, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         out = out[:, :original_h, :original_w, :]
@@ -772,7 +778,7 @@ class WindowCosineAttention(nn.Module):
         original_h, original_w = qkv.shape[1:3]
         qkv, h, w = _pad_nhwc(qkv, self.window_size)
         out = self._attend(qkv, h, w, None)
-        return out[:, :original_h, :original_w, :]
+        return _fp8_boundary(self, out[:, :original_h, :original_w, :])
 
 
 class CCTVitAttention(nn.Module):
@@ -824,7 +830,7 @@ class CCTVitAttention(nn.Module):
         weights = weights / denominator
         output = (weights @ v).transpose(1, 2).contiguous().view(-1, n, self.dim)
         output = _window_reverse(output, self.window_size, h, w, self.dim)
-        return output[:, :original_h, :original_w, :]
+        return _fp8_boundary(self, output[:, :original_h, :original_w, :])
 
 
 class SwinBlock(nn.Module):
@@ -853,8 +859,9 @@ class SwinBlock(nn.Module):
         # mul+add residual epilogue, then emits qkv/attention/projection.
         # There is no LayerNorm op in that list; the only explicit norm is
         # the per-vector Q/K normalization inside WindowCosineAttention.
-        x = x + self.mlp(x) * self.ffn_cos_skip
-        return x + self.attn(x) * self.attn_cos_skip
+        hidden = _fp8_boundary(self, cct_cubic_silu(self.mlp[0](x)))
+        x = _fp8_boundary(self, x + self.mlp[2](hidden) * self.ffn_cos_skip)
+        return _fp8_boundary(self, x + self.attn(x) * self.attn_cos_skip)
 
 
 class PatchMerging(nn.Module):
@@ -875,7 +882,7 @@ class PreSwinDownsample(nn.Module):
     """The block0 ``_ds`` pool, which has no serialized transition matrix."""
 
     def forward(self, x: Tensor) -> Tensor:
-        return _avg_pool2_nhwc(x)
+        return _fp8_boundary(self, _avg_pool2_nhwc(x))
 
 
 class PatchExpand(nn.Module):
@@ -910,7 +917,7 @@ class SwinTransitionDown(nn.Module):
         x = F.avg_pool2d(
             x.permute(0, 3, 1, 2), kernel_size=2, stride=2, count_include_pad=True
         ).permute(0, 2, 3, 1)
-        return self.conv_weight(x)
+        return _fp8_boundary(self, self.conv_weight(x))
 
 
 class SwinTransitionUp(nn.Module):
@@ -928,7 +935,7 @@ class SwinTransitionUp(nn.Module):
         skip = F.interpolate(
             skip.permute(0, 3, 1, 2), size=x.shape[1:3], mode="bilinear", align_corners=False
         ).permute(0, 2, 3, 1)
-        return x + skip
+        return _fp8_boundary(self, x + skip)
 
 
 class DecInputUpsample(nn.Module):
@@ -952,7 +959,7 @@ class DecInputUpsample(nn.Module):
         skip = F.interpolate(
             skip.permute(0, 3, 1, 2), size=x.shape[1:3], mode="bilinear", align_corners=False
         ).permute(0, 2, 3, 1)
-        return x + skip * self.dw_weight
+        return _fp8_boundary(self, x + skip * self.dw_weight)
 
 
 class SwinDownBlock(nn.Module):
@@ -1030,16 +1037,17 @@ class SplitSwinBlock(nn.Module):
         ffn_input = x
         activated = cct_cubic_silu(self.ffwd(ffn_input))
         gate = self.ffwd_gate(ffn_input)
-        feed_forward = self.ffwd_proj(activated * gate)
-        x = x + feed_forward * self.ffn_cos_skip
+        gated = _fp8_boundary(self, activated * gate)
+        feed_forward = self.ffwd_proj(gated)
+        x = _fp8_boundary(self, x + feed_forward * self.ffn_cos_skip)
         attention = self.qkv_attn(x)
-        full = x + self.projection(attention) * self.attn_cos_skip
+        full = _fp8_boundary(self, x + self.projection(attention) * self.attn_cos_skip)
         if self.final_head is None:
             return full, full
         pooled = _avg_pool2_nhwc(full)
         skip = full
         main = self.final_output(self.final_head(pooled).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        return main, skip
+        return _fp8_boundary(self, main), skip
 
 
 class ViTBlock(nn.Module):
@@ -1063,11 +1071,11 @@ class ViTBlock(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         # The CCVit block registers and executes its FFN pair before QKV /
         # attention / projection, matching the fused host graph order.
-        hidden = cct_cubic_silu(self.ffn_expand(x))
-        x = x + self.ffn_contract(hidden) * self.ffn_cos_skip
-        qkv = self.qkv(x)
+        hidden = _fp8_boundary(self, cct_cubic_silu(self.ffn_expand(x)))
+        x = _fp8_boundary(self, x + self.ffn_contract(hidden) * self.ffn_cos_skip)
+        qkv = _fp8_boundary(self, self.qkv(x))
         x = x + self.projection(self.attention(qkv)) * self.attn_cos_skip
-        return x
+        return _fp8_boundary(self, x)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,51 +1171,25 @@ class DLSS5Graph(nn.Module):
         self.post_out = nn.Conv2d(32, output_channels, 1, bias=False)
         self.blend_scale = nn.Parameter(torch.tensor(0.73974609375), requires_grad=False)
         self.weight_report: Optional[dict[str, Any]] = None
-        self._fp8_emulation_handles: list[Any] = []
-
-    @staticmethod
-    def _quantize_module_output(_module: nn.Module, _inputs: tuple[Any, ...], output: Any) -> Any:
-        if isinstance(output, Tensor):
-            return quantize_s_e4m3_satfinite(output)
-        if isinstance(output, tuple):
-            return tuple(
-                quantize_s_e4m3_satfinite(item) if isinstance(item, Tensor) else item
-                for item in output
-            )
-        return output
+        self._fp8_emulation_enabled = False
 
     def enable_fp8_emulation(self) -> "DLSS5Graph":
         """Emulate the activation storage boundaries of the quantized cubins.
 
-        Matrix outputs and fused-block outputs are rounded to saturating E4M3.
-        The final projection is included as well: its tensor-core accumulator
-        can exceed FP16 before the post kernel's output conversion. Calling
-        this method more than once is harmless.
+        Outputs are rounded at the fused-kernel boundaries established by the
+        ``*_fp8`` entry points. In particular, FFN expansion is quantized after
+        MpCubicSiLU, matching the SASS ``QMMA -> activation -> F2FP`` order.
         """
 
-        if self._fp8_emulation_handles:
-            return self
-        boundary_types = (
-            SwinBlock,
-            SplitSwinBlock,
-            ViTBlock,
-            SwinTransitionDown,
-            SwinTransitionUp,
-            DecInputUpsample,
-            PreSwinDownsample,
-        )
-        for name, module in self.named_modules():
-            is_matrix = isinstance(module, (nn.Linear, nn.Conv2d))
-            if is_matrix or isinstance(module, boundary_types):
-                self._fp8_emulation_handles.append(
-                    module.register_forward_hook(self._quantize_module_output)
-                )
+        for module in self.modules():
+            module._emulate_fp8 = True
+        self._fp8_emulation_enabled = True
         return self
 
     def disable_fp8_emulation(self) -> "DLSS5Graph":
-        for handle in self._fp8_emulation_handles:
-            handle.remove()
-        self._fp8_emulation_handles.clear()
+        for module in self.modules():
+            module._emulate_fp8 = False
+        self._fp8_emulation_enabled = False
         return self
 
     @staticmethod
@@ -1256,13 +1238,13 @@ class DLSS5Graph(nn.Module):
     ) -> tuple[Tensor, dict[str, Tensor]]:
         # block 0: pre block, retaining the full-resolution skip.
         if pre_features is None:
-            x = self.input_adapter(rgb)
+            x = _fp8_boundary(self, self.input_adapter(rgb))
         else:
             if pre_features.ndim != 4 or pre_features.shape[1] != 32:
                 raise ValueError("pre_features must be NCHW with exactly 32 channels")
             if pre_features.shape[0] != rgb.shape[0] or pre_features.shape[2:] != rgb.shape[2:]:
                 raise ValueError("pre_features must have the same batch and spatial shape as rgb")
-            x = self.pre_texture_adapter(pre_features)
+            x = _fp8_boundary(self, self.pre_texture_adapter(pre_features))
         x = x.permute(0, 2, 3, 1)
         skip0 = self.pre_body(x)
         x = self.pre_down(skip0)
@@ -1318,8 +1300,9 @@ class DLSS5Graph(nn.Module):
         # mul -> add.  Its MpCubicSiLU belongs to the following post-body
         # FFN, so do not insert a GELU between the input fuse and that body.
         fused = self.post_input_projection(main) + skip * self.post_input_scale.view(1, 32, 1, 1)
+        fused = _fp8_boundary(self, fused)
         fused = self.post_body(fused.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        neural = self.post_out(fused)
+        neural = _fp8_boundary(self, self.post_out(fused))
         return neural, {"skip0": skip0, "skip1": skip1, "skip2": skip2, "skip3": skip3, "skip4": skip4}
 
     def forward(
@@ -1341,7 +1324,17 @@ class DLSS5Graph(nn.Module):
         else:
             mask = F.interpolate(control_mask[:, :1], size=neural.shape[-2:], mode="bilinear", align_corners=False)
             weight = (mask * self.blend_scale.to(dtype=mask.dtype, device=mask.device)).clamp(0.0, 1.0)
-        output = base + weight * (neural - base)
+        # The simple-blend sm_120 tail computes, per RGB channel,
+        #
+        #   delta = base - neural
+        #   output = neural + blend * delta
+        #
+        # (FADD at d400..d420 followed by FFMA at d430..d450).  The
+        # ControlMask variant has the same final interpolation after
+        # saturating the mask-derived blend factor.  Keeping the operand
+        # order matters: blend_scale=1 selects the source color, not the
+        # neural branch.
+        output = neural + weight * (base - neural)
         if return_features:
             features["neural"] = neural
             features["blend_weight"] = weight if isinstance(weight, Tensor) else torch.as_tensor(weight)

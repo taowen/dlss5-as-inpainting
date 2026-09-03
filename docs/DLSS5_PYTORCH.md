@@ -53,6 +53,7 @@ python tools/extract_dlssnr_resources.py bin/nvngx_dlssnr.dll
 python3 tools/dlss5_pytorch.py --self-test
 python3 tools/dlss5_pytorch.py --weights DLSS5-extracted/WEIGHTS_HT.bin
 python tools/probe_dlss5_pytorch.py --weights DLSS5-extracted --device cuda --dtype float16 --size 256
+python tools/compare_dlss5_native_pytorch.py runtime_probe_output/worker_probe/reset_current_frame0.rgba8.bin
 python tools/export_dlss5_pytorch.py --weights DLSS5-extracted
 python tools/run_dlss5_pytorch.py DLSS5-extracted/dlss5_pytorch_reference_fp16.pt --device cuda --size 256
 ```
@@ -73,14 +74,20 @@ net = net.half().cuda().eval()
 如果关闭 FP8 emulation，让融合层的中间结果一直以不受限 FP32 传播，gated
 Split-Swin 会逐层放大并产生非有限值；这不是原始量化 CUBIN 的执行方式。
 
+sm_120 SASS 进一步固定了两个容易写错的顺序：ViT/普通 Swin 是
+`QMMA -> MpCubicSiLU -> F2FP.E4M3`，不是在线性层后、激活前量化；Split-Swin
+则是两支 FP16 结果完成 `MpCubicSiLU(a) * b` 后再 `F2FP.E4M3`。post 的
+simple-blend 尾部是 `output = neural + blend * (base - neural)`，因此
+`blend=1` 选择输入颜色，`blend=0` 才选择 neural 输出。
+
 本机 RTX 5080（PyTorch 2.11.0+cu128，原生 `sm_120`）验证结果：完整 71-block
 图以 FP16 计算、E4M3 activation round-trip 执行 256×256 输入，输出
-196,608/196,608 元素全部有限，单次约 0.70 秒，峰值显存约 616 MiB。导出的
+196,608/196,608 元素全部有限，单次约 0.68 秒，峰值显存约 600 MiB。导出的
 checkpoint 含 145,754,963 个参数，约 291.8 MB；从磁盘重新加载后可独立执行。
 
 这仍是“可执行参考翻译”，不是 bit-exact 克隆。把与 native worker 相同的
 256×256 deterministic RGB 输入送入两条路径后，当前 PyTorch 输出裁剪到 `[0,1]`
-的 RGB MAE 为 `0.48527`（RMSE `0.54778`）。这个较大的差距符合尚未恢复的 pre
+的 RGB MAE 为 `0.45909`（RMSE `0.52415`）。这个较大的差距符合尚未恢复的 pre
 texture feature assembly、tensor-core storage permutation、transition 空间重排和
 post output swizzle；后续校准应以这个 golden pair 为基线，而不能把“全有限”误当成
 已经复现 DLL 数值。
