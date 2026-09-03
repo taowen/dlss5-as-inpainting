@@ -87,12 +87,13 @@ checkpoint 含 145,754,963 个参数，约 291.8 MB；从磁盘重新加载后�
 
 这仍是“可执行参考翻译”，不是 bit-exact 克隆。把与 native worker 相同的
 256×256 deterministic RGB 输入送入两条路径后，使用默认的
-`post_output_layout="column_major_prefix"`，PyTorch 输出裁剪到 `[0,1]` 的 RGB
-MAE/RMSE 分别为：variant 0 `0.40792/0.48164`，variant 1 `0.41632/0.48684`。
-作为布局对照，旧的 `raw` 输出在两组输入上分别为 `0.45138/0.52038` 和
-`0.45201/0.51782`。剩余差距主要来自尚未恢复的 pre texture feature assembly、
-transition 空间重排以及其他 fused tensor-core layout；“全有限”仍不能误当成
-已经复现 DLL 数值。
+`post_output_layout="column_major_prefix"` 和已修正的 pre body offsets，PyTorch
+输出裁剪到 `[0,1]` 的 RGB MAE/RMSE 分别为：variant 0 `0.14276/0.15398`，
+variant 1 `0.14056/0.14976`；RGB correlation 分别为 `0.98803/0.98980`。
+当前 RGB 路径使用零前端 fallback，因此该改善主要证明 body 地址修正和 native
+输入/输出关系已稳定，不等于 texture front-end 已 bit-exact 复现。剩余差距主要
+来自尚未恢复的 TEX/cat feature assembly、两块 FP16 front tile 的连接、transition
+空间重排以及其他 fused tensor-core layout。
 
 ```python
 from tools.dlss5_pytorch import DLSS5Graph
@@ -101,7 +102,7 @@ net = DLSS5Graph()
 out = net(rgb=rgb, control_mask=mask)
 
 # 如果已经在外部重建了 pre kernel 的 texture/cat 前端，可把它生成的
-# NCHW 32-channel feature tile 显式送入完整的 32×32 prefix adapter：
+# NCHW 32-channel body feature tile 显式送入 pre body：
 out = net(rgb=rgb, pre_features=pre_features, control_mask=mask)
 
 # 如果要把外围 temporal feature 先拼好再送入参考图，显式指定输入宽度；
@@ -129,7 +130,7 @@ out = temporal_net(color, history=previous_output, motion=motion, control_mask=m
 | Split FinalHead | layer4 | FP8 `(1024,512)` pointwise weight + 16 bytes padding；FinalHead 作用于 `ProjPool` 的 2×2 pooled 512-channel output；host 的第二 convolution slot 在 cubin/record 中无独立权重，reference 按 identity 表达 |
 | 普通/transition Swin | layer0 | `weight1/2` FP8，FFN 宽度 `128/224/384/704`；`qkv/projection` FP8；per-head `attn_scale` FP32；两组 `cos_skip` 和 `attn_bias` FP16。ordinary 总长 `20672/61760/197184/689232`，down/up body 及 transition matrix 也已接入 |
 | Post block70 | layer0 | 前置 `dw_weight(32,)` 与 `inp_upsample_input_scale(32,)` FP16、C32 body 的 `weight1/2/qkv/projection/cos_skip/attn_bias`、FP32 `attn_scale`，以及按注册顺序拆出的 `out_gain(8×FP16)` + padded FP16 `out_conv_weight(16×32)` 已接入；sm_120 的两次 512-half global load 与 native golden 回归支持将前 96 half 按 `K=32,N=3` column-major 重解释，默认使用 `post_output_layout="column_major_prefix"`；`raw` 与 `tensor_core_candidate` 仍保留作对照；`out_gain` 当前 8 个值全为 0 |
-| Pre block0 | layer0 | 1024-byte `32×32` E4M3 raw tile + C32 body；完整 raw payload 装入 `pre_texture_adapter` 作为探索入口，但 texture front-end 和 tensor-core storage permutation 仍未解出；没有 front-end 时保留一个明确标注为 fallback 的 RGB 1×1 projection；block0 output0 是无参数 2×2 pool；`weight2` 的 4 个非法槽置零作为运行 fallback |
+| Pre block0 | layer0 | C32 body 的 `weight1/weight2` 从 record offset `0/4096` 读取；sm_120 SASS 在 body 前另读 `+0x2010/+0x2210` 两块 `16×16` FP16 front tile，当前保存为 audit buffer，texture feature producer 尚未解出；没有 front-end 时使用明确标注的零 RGB fallback；block0 output0 是无参数 2×2 pool |
 | Decoder input block39 | layer0 | FP8 `(512,1024)` projection + FP16 `(512,)` channel scale；`sin/tile` 插值路径用 bilinear reference 表达 |
 
 普通 Swin 的 `attn_bias` 起始偏移已校正为 `11360/41120/147744/557600`（C=32/64/128/256）；`projection` 起始偏移为 `19568/57520/180528/623168`。bias 结束到 projection 开始的 `16/16/16/32` 字节不是 opaque gap，而是 `1/2/4/8` 个 FP32 per-head `attn_scale`，其余字节为对齐 padding。up body、pre 和 post 也按相同规则接入了 scale；up body 的前置 `2*C²` 区和 QKV 前的 `sin/opaque` 区仍只记录在 report 中。
@@ -145,6 +146,6 @@ net, weight_map = DLSS5Graph.with_weight_map(
 print(net.weight_report)
 ```
 
-`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre 的完整 32×32 raw input-prefix payload、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；默认把前 96 half 按 column-major `K=32,N=3` 重解释，来自 sm_120 load stride 和 golden 回归，`raw` 与 hole-compressed `tensor_core_candidate` 仍可用于对照。`out_gain` 已解码且 8 个值全为 0。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `cat/ones_like/detach` 数值实现及其 prefix storage permutation、block0 `weight2`、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
+`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre C32 body、pre 的两块 `16×16` FP16 front tile（保存为 audit buffer）、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；默认把前 96 half 按 column-major `K=32,N=3` 重解释，来自 sm_120 load stride 和 golden 回归，`raw` 与 hole-compressed `tensor_core_candidate` 仍可用于对照。`out_gain` 已解码且 8 个值全为 0。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `TEX/cat/ones_like/detach` 数值组装、两块 front tile 的输入/输出连接、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
 
-剩余的 pre texture front-end 数值组装、downsample/upsample 的精确空间重排、block39 的 `sin/tile` 插值、ViT half2 exp 的 bit-exact 实现、post output tile 的 tensor-core swizzle/out_gain consumer 仍是 fused layout；pre `weight2` 的 4 个非法槽目前只能用零 fallback。要达到 bit-exact，还需要继续从对应 kernel 的 load stride 和 DLL golden 输出校准这些布局及每层量化参数。
+剩余的 pre texture front-end 数值组装、两块 FP16 front tile 的连接、downsample/upsample 的精确空间重排、block39 的 `sin/tile` 插值、ViT half2 exp 的 bit-exact 实现、post output tile 的 tensor-core swizzle/out_gain consumer 仍是 fused layout。要达到 bit-exact，还需要继续从对应 kernel 的 load stride 和 DLL golden 输出校准这些布局及每层量化参数。

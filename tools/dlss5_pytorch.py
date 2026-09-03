@@ -532,14 +532,15 @@ KNOWN_POST_SWIN_LAYOUT = {
 
 KNOWN_PRE_SWIN_LAYOUT = {
     "expected_bytes": 21696,
-    "prefix_bytes": 1024,
-    # The pre kernel's first convolution consumes the 32-channel feature
-    # tile assembled by its texture front-end.  The host descriptor exposes
-    # RGB as the external resource, but that is not the same thing as the
-    # convolution's logical K dimension.
-    "prefix_shape": (32, 32),
-    "weight1": (1024, (128, 32)),
-    "weight2": (5120, (32, 128)),
+    # The pre kernel's two body matrices start at the record base, like the
+    # ordinary C32 body. Its extra texture/front-end payload is inserted
+    # after those matrices, immediately before the residual/QKV metadata.
+    "weight1": (0, (128, 32)),
+    "weight2": (4096, (32, 128)),
+    # Two 512-byte FP16 tiles are loaded by the HMMA front-end before the
+    # body. Their producer feature assembly is still texture-dependent.
+    "front_weight0_f16": (8208, (16, 16)),
+    "front_weight1_f16": (8720, (16, 16)),
     "ffn_cos_skip": (9232, (32,)),
     "qkv": (9296, (96, 32)),
     "attn_bias": (12384, (1, 64, 64)),
@@ -1125,8 +1126,8 @@ class DLSS5Graph(nn.Module):
     core input directly.  The default therefore stays at the statically
     confirmed 3 input channels.  ``pre_features=`` is an advanced hook for
     the 32-channel tensor produced by the unresolved CUDA texture front-end;
-    when supplied, the serialized 32x32 prefix is applied exactly as a
-    pointwise adapter to that tensor.
+    when supplied, it enters the C32 body through an identity adapter.  The
+    two serialized FP16 front tiles are retained for future front-end work.
     """
 
     def __init__(
@@ -1154,14 +1155,17 @@ class DLSS5Graph(nn.Module):
         self.window_size = window_size
         self.post_output_layout = post_output_layout
 
-        # The pre kernel has a texture/layout front-end between the external
-        # RGB resource and its first convolution.  Its 1024-byte prefix is a
-        # complete 32x32 FP8 payload, so keep a dedicated destination for
-        # callers that can provide the assembled 32-channel feature tensor.
-        # The tensor-core storage permutation is still an audit item; this
-        # module is an exploration hook, not a claim that row-major logical
-        # weights have already been recovered.
+        # The pre kernel has a texture/layout front-end before its C32 body.
+        # The two serialized 16x16 FP16 front tiles are kept as buffers by
+        # the loader below. Their texture feature producer is not yet
+        # resolved, so this module remains an identity hook for callers that
+        # can provide the assembled 32-channel body input.
         self.pre_texture_adapter = nn.Conv2d(32, 32, 1, bias=False)
+        with torch.no_grad():
+            self.pre_texture_adapter.weight.zero_()
+            self.pre_texture_adapter.weight[:, :, 0, 0].copy_(torch.eye(32))
+        self.register_buffer("pre_front_weight0_f16", torch.zeros(16, 16))
+        self.register_buffer("pre_front_weight1_f16", torch.zeros(16, 16))
         # This is only a runnable RGB fallback.  The host method confirms an
         # RGB texture input, but the exact cat/ones_like/detach feature
         # assembly is still fused into the CUDA front-end and is not replaced
@@ -1169,6 +1173,8 @@ class DLSS5Graph(nn.Module):
         if self.input_channels > 32:
             raise ValueError("pre input adapter supports at most 32 logical input channels")
         self.input_adapter = nn.Conv2d(self.input_channels, 32, 1, bias=False)
+        with torch.no_grad():
+            self.input_adapter.weight.zero_()
         self.pre_body = SwinBlock(32, 1, window_size, shift_size=window_size // 2)
         # Unlike blocks 4/8/14/22, block0 has no appended learned transition
         # matrix.  Its second output is the full-resolution Swin tensor and
@@ -1584,7 +1590,7 @@ class DLSS5Graph(nn.Module):
         return self.load_swin_weights(weights, blocks=blocks)
 
     def load_pre_weights(self, weights: DLSS5WeightMap) -> dict[str, Any]:
-        """Load block 0's decoded C32 Swin body after its pre prefix."""
+        """Load block 0's C32 body and retain its unresolved front tiles."""
 
         name = "block0.layer0.layer"
         spec = KNOWN_PRE_SWIN_LAYOUT
@@ -1593,49 +1599,46 @@ class DLSS5Graph(nn.Module):
         loaded: list[str] = []
         metadata: list[dict[str, Any]] = [
             {
-                "name": "block0.pre_texture_adapter_weight",
-                "offset": 0,
-                "bytes": int(spec["prefix_bytes"]),
+                "name": "block0.pre_texture_front_weight0_f16",
+                "offset": int(spec["front_weight0_f16"][0]),
+                "bytes": math.prod(spec["front_weight0_f16"][1]) * 2,
                 "applied": False,
-                "shape": list(spec["prefix_shape"]),
-                "reason": "complete 32x32 raw FP8 payload copied to an exploration adapter; texture front-end and tensor-core storage permutation remain unresolved",
-            }
+                "shape": list(spec["front_weight0_f16"][1]),
+                "reason": "sm_120 pre HMMA front tile; texture feature producer is unresolved",
+            },
+            {
+                "name": "block0.pre_texture_front_weight1_f16",
+                "offset": int(spec["front_weight1_f16"][0]),
+                "bytes": math.prod(spec["front_weight1_f16"][1]) * 2,
+                "applied": False,
+                "shape": list(spec["front_weight1_f16"][1]),
+                "reason": "sm_120 pre HMMA front tile; texture feature producer is unresolved",
+            },
         ]
         skipped: list[str] = []
 
-        adapter_tile = decode_fp8_matrix(
-            raw,
-            tuple(spec["prefix_shape"]),
-            byte_offset=0,
-        )
-        _copy_parameter(
-            self.pre_texture_adapter.weight,
-            adapter_tile.reshape(32, 32, 1, 1),
-            f"{name}.pre_texture_adapter_weight",
-        )
-        loaded.append(f"{name}.input_prefix -> pre_texture_adapter[32->32]")
+        for section, destination in (
+            ("front_weight0_f16", self.pre_front_weight0_f16),
+            ("front_weight1_f16", self.pre_front_weight1_f16),
+        ):
+            offset, shape = spec[section]
+            tile = _decode_blob_f16(weights, name, int(offset), tuple(shape))
+            _copy_parameter(destination, tile, f"{name}.{section}")
+            loaded.append(f"{name}.{section} -> audit buffer")
 
         # Keep the old direct-RGB path runnable for smoke tests and callers
         # without a reconstruction of the texture front-end, but do not
-        # report it as the serialized adapter.  The full prefix has no
-        # row-major 32x3 evidence; selecting its first three columns is only
-        # a deterministic fallback.
+        # report it as a serialized adapter. There is no proven RGB->32
+        # matrix in this record, so use a zero fallback rather than slicing
+        # body or front payload bytes into a false projection.
         if self.input_channels:
-            adapter = adapter_tile[:, : self.input_channels].reshape(
-                32, self.input_channels, 1, 1
-            )
-            _copy_parameter(
-                self.input_adapter.weight,
-                adapter,
-                f"{name}.rgb_fallback_weight",
-            )
             metadata.append(
                 {
                     "name": "block0.rgb_fallback_weight",
-                    "offset": 0,
-                    "bytes": int(spec["prefix_bytes"]),
+                    "offset": None,
+                    "bytes": 0,
                     "applied": False,
-                    "reason": "first logical columns used only as a deterministic fallback; pre cat/texture feature assembly is unresolved",
+                    "reason": "zero fallback; no serialized RGB->32 projection is proven",
                 }
             )
 

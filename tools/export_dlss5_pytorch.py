@@ -36,7 +36,7 @@ def main() -> int:
             "output_channels": 3,
             "window_size": 8,
             "vit_layout": "2d",
-            "post_output_layout": "raw",
+            "post_output_layout": "column_major_prefix",
         },
         "weight_source": weight_map.source,
         "weight_records": len(weight_map.records),

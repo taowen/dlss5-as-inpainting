@@ -107,7 +107,7 @@ flowchart LR
 
 Cubin 与主机端 layer 构造代码共同确认了以下算子族：
 
-- Pre block 另有 fused texture front-end：host op 列表为 `mul → ones_like → detach → cat → cat → convolution`，kernel 开头也有 `TEX` 和 feature-tile 写入。1024-byte 前缀是该 front-end 输出之后的完整 `32×32` raw E4M3 payload，不能直接按 RGB 的 `32×3` 行主序矩阵解释；其 tensor-core storage permutation 仍未恢复。随后 `_ds` output0 是无参数 2×2/stride-2 pool，output1 保留 full-resolution tensor。其后是无额外 LayerNorm 的 C32 Swin：FFN 使用 `MpCubicSiluActivation`，再做 QKV、Q/K 向量归一化、per-head FP32 cosine scale、cosine attention、softmax、值聚合、输出投影和残差。
+- Pre block 另有 fused texture front-end：host op 列表为 `mul → ones_like → detach → cat → cat → convolution`，kernel 开头也有 `TEX` 和 feature-tile 写入。sm_120 SASS 在 C32 body 之前读取 record 内 `+0x2010` 与 `+0x2210` 两块各 `16×16` 的 FP16 tile；它们的 TEX/cat 输入输出连接尚未恢复，不能直接当作 RGB 投影。C32 body 的 `weight1/weight2` 从 record offset `0/4096` 开始。随后 `_ds` output0 是无参数 2×2/stride-2 pool，output1 保留 full-resolution tensor。其后是无额外 LayerNorm 的 C32 Swin：FFN 使用 `MpCubicSiluActivation`，再做 QKV、Q/K 向量归一化、per-head FP32 cosine scale、cosine attention、softmax、值聚合、输出投影和残差。
 - 其余 fused Swin：无额外 LayerNorm；FFN 使用 `MpCubicSiluActivation`，再做 QKV、Q/K 向量归一化、per-head FP32 cosine scale、cosine attention、softmax、值聚合、输出投影和残差；包含 shifted/non-shifted 版本。
 - Split-Swin 512：两条 `512→512` FFN 支路，其中一条经过 `MpCubicSiLU` 后与另一条逐元素相乘，再经 `FFwdProj(residual scale)`；随后是 `QKVAttn → Proj/ProjPool(residual scale)`。最后一个 encoder block 的 `ProjPool` 产出全分辨率 512 通道 residual 和固定 2×2 pooled 512 通道分支，单个 `512→1024` pointwise `FinalHead` 作用于 pooled 分支；前者作为 output 1 decoder skip，后者作为 output 0 的 ViT 输入。
 - ViT 1024：`FFN Expand(1024→4096) → MpCubicSiLU → FFN Contract(4096→1024) → QKV(Q/K normalize × sqrt(32)) → layer3 score scalar → 自定义 exp/reciprocal attention → Projection`；另有 1D/2D repack 变体。
@@ -165,7 +165,7 @@ Output = neural_result + effective_blend * (base_result - neural_result)
 
 ## 已确认边界
 
-已经恢复的是 Feature 资源接口、71-block DAG、skip 的 block/output index、层类型、通道族、主要 fused blob 的矩阵 shape/offset、FP32 per-head attention scale、pre 的完整 32×32 input-prefix tile、`MpCubicSiLU`、ProjPool 的 pooled/full 双分支、FinalHead 的 pointwise/skip 分支、post 的输入 residual fusion、post tail 的 `out_gain + out_conv_weight` 分段和 Cubin kernel 集合。尚未恢复的部分包括 pre texture front-end 的 `cat/ones_like/detach` 数值组装、down/up 的精确空间重排、ViT 的 half2 exp 近似、post output tile 的 tensor-core row/lane swizzle 与 out_gain consumer、tile 调度选择条件以及 FP8 量化比例；pre weight2 的 4 个非法 E4M3 槽目前以零 fallback。可运行的 PyTorch 参考实现位于 `tools/dlss5_pytorch.py`；要达到 bit-exact，还需要用 DLL 输出继续做数值对齐。
+已经恢复的是 Feature 资源接口、71-block DAG、skip 的 block/output index、层类型、通道族、主要 fused blob 的矩阵 shape/offset、FP32 per-head attention scale、pre C32 body 的 `weight1/weight2` 起始位置、pre 的两块 FP16 front tile、`MpCubicSiLU`、ProjPool 的 pooled/full 双分支、FinalHead 的 pointwise/skip 分支、post 的输入 residual fusion、post tail 的 `out_gain + out_conv_weight` 分段和 Cubin kernel 集合。尚未恢复的部分包括 pre texture front-end 的 `TEX/cat/ones_like/detach` 数值组装及两块 front tile 的连接、down/up 的精确空间重排、ViT 的 half2 exp 近似、post output tile 的 tensor-core row/lane swizzle 与 out_gain consumer、tile 调度选择条件以及 FP8 量化比例。可运行的 PyTorch 参考实现位于 `tools/dlss5_pytorch.py`；要达到 bit-exact，还需要用 DLL 输出继续做数值对齐。
 
 ## 复现
 
