@@ -48,3 +48,32 @@ python tools\dlss5_worker_probe.py `
 The generated manifest, stderr logs, and raw output frames are in
 `runtime_probe_output/worker_probe/`. The native worker and its host-side DLLs
 must remain together in the extracted runtime directory.
+
+## Independent native harness cross-check
+
+On 2026-09-04, the public C++ harness from
+[`criso2hd-alt/DLSS5-Image-Converter`](https://github.com/criso2hd-alt/DLSS5-Image-Converter)
+was built locally against the public NVIDIA DLSS SDK headers and run with the
+same locally available runtime files. Its probe reported:
+
+- RTX 5080, driver 616.56
+- `dlss_available=1`
+- `reshade_proxy_loaded=1`
+- `neural_addon_loaded=1`
+- `dlssnr_module_loaded=1`
+- `test_evaluation=ok`
+
+The harness also returned a full 256x256 `RGBA16F` output. Feeding it the same
+deterministic pattern used by the worker, after converting the RGBA8 values to
+linear RGBA16F, produced a linear-domain correlation of `0.9979` against the
+worker's RGBA8 result and mean absolute difference `0.0120`. This independently
+cross-checks the native worker path and color contract; it does not expose
+per-layer tensors.
+
+An explicit `DLSSNR.ControlMask` resource added to the ordinary DLSS parameter
+block produced identical mask=0 and mask=255 outputs in this harness. That
+means the field was not propagated through this ordinary-DLSS hook setup; it is
+not evidence that the native Feature 18 implementation lacks ControlMask.
+
+The temporary build, SDK headers, and locally staged runtime are outside this
+repository. NVIDIA runtime files and third-party binaries are not committed.
