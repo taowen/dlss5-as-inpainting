@@ -15,7 +15,7 @@
 
 ## 结论
 
-这个模型不是单纯的单帧 inpainting 网络，而是一个带时间历史的多尺度 encoder/decoder：四级 fused Swin encoder，Split-Swin 与 1024 通道 ViT 瓶颈，再通过对称 skip connection 解码。模型当前帧的主要直接输入是颜色、上一帧模型输出和运动矢量；逐像素 `ControlMask` 只在最后的 post-block 控制神经结果混合，不进入 encoder。
+这个模型不是单纯的单帧 inpainting 网络，而是一个带时间历史的多尺度 encoder/decoder：四级 fused Swin encoder，Split-Swin 与 1024 通道 ViT 瓶颈，再通过对称 skip connection 解码。静态 core 图的 block0 直接输入是单张 RGB texture；Color、上一帧输出和运动矢量如何在外围组装成该 RGB 输入，属于 Feature/temporal 接线，不把它们误写成 cubin 内部的额外 channel。
 
 一个需要特别更正的结论是：该 DLL 的 Feature 参数解析器确实读取 `DLSSNR.Depth`，但 `CG2RNetworkManager::Evaluate` 没有访问保存 Depth 的字段，并在核心网络输入设置调用中把相应槽位传为 `0`。因此，对这个确切 DLL 而言，Depth 是“ABI 接受但神经核心未消费”的输入，不能把它列为该模型的必要神经条件。
 
@@ -78,7 +78,7 @@ flowchart LR
 
 | Block | 类型 | 通道/角色 | 输入关系 |
 |---:|---|---|---|
-| 0 | `CCTinlayoutFusedPreBlockSwin1H`，downsample | RGB → 32 | 网络 `rgb` 输入；output 0 继续编码，output 1 留作 block 70 skip。 |
+| 0 | `CCTinlayoutFusedPreBlockSwin1H`，downsample | RGB texture → fused 32ch → 32 | 网络 `rgb` 是外部纹理；kernel 内先做 texture feature front-end，再进入 32-channel body；output 0 继续编码，output 1 留作 block 70 skip。 |
 | 1–3 | `CCTinlayoutFusedSwin1H` | 32 | 顺序连接。 |
 | 4 | Swin1H downsample | 32 → 64 | output 0 进入 block 5；output 1 供 block 66。 |
 | 5–7 | `CCTinlayoutFusedSwin2H` | 64 | 顺序连接。 |
@@ -87,7 +87,7 @@ flowchart LR
 | 14 | Swin4H downsample | 128 → 256 | output 1 供 block 56。 |
 | 15–21 | `CCTinlayoutFusedSwin8H` | 256 | 顺序连接。 |
 | 22 | Swin8H downsample | 256 → 512 | output 1 供 block 48。 |
-| 23–30 | `CCSplitSwin16HBlock` | 512 | 8 个 block；block 30 多一个 `FinalHead`，产生进入 ViT 的主分支和 decoder skip。 |
+| 23–30 | `CCSplitSwin16HBlock` | 512 | 8 个 block；block 30 的 `ProjPool` 产生 pooled 主分支和 full-resolution skip，随后 `FinalHead` 变成 ViT 的 1024 通道输入。 |
 | 31–38 | `CCVit1DBlock` 或 `CCVitBlock` | 1024 | 工厂按布局变体选择；两套 kernel 都在 DLL 中。每个 block 含 5 个子层。 |
 | 39 | `CCDecInputUpsample` | 1024 → 512 | main=`block38.out0`，skip=`block30.out1`。 |
 | 40–47 | `CCSplitSwin16HBlock` | 512 | 8 个 decoder block。 |
@@ -99,7 +99,7 @@ flowchart LR
 | 63–65 | `CCTinlayoutFusedSwin2H` | 64 | 顺序连接。 |
 | 66 | Swin1H upsample | 64 + 32 → 32 | main=`block65.out0`，skip=`block4.out1`。 |
 | 67–69 | `CCTinlayoutFusedSwin1H` | 32 | 顺序连接。 |
-| 70 | `CCTinlayoutFusedPostBlockSwin1H` | 32 + RGB → RGB | main=`block69.out0`，skip=`block0.out1`；应用 `blend_scale` 和可选 ControlMask。 |
+| 70 | `CCTinlayoutFusedPostBlockSwin1H` | 32 + enc0 skip(32) → RGB | main=`block69.out0`，skip=`block0.out1`；`block0.out1` 是 pre 的 full-resolution 32-channel 输出，不是原始 RGB；应用 `blend_scale` 和可选 ControlMask。 |
 
 `_ds` block 同时输出继续下采样的 output 0 和保留给 decoder 的 output 1；所有显式双输入连接都在工厂函数 `0x180039780` 中以 block index 和 output index 构造。具体每一级的边界 padding 和 tile 对齐由 fused kernel 实现，不能仅凭名称等同于某个 PyTorch `interpolate` 参数。
 
@@ -107,11 +107,12 @@ flowchart LR
 
 Cubin 与主机端 layer 构造代码共同确认了以下算子族：
 
-- Fused Swin：卷积/深度卷积、QKV 类投影、Q/K 向量归一化、cosine attention、clamp、softmax、值聚合、输出投影、残差和 padding；包含 shifted/non-shifted 版本。
-- Split-Swin 512：`QKVAttn → ProjPool → FFwd → FFwdProj`；最后一个 encoder block 另有 `FinalHead`。
-- ViT 1024：`QKV → Attention → Projection → FFN Expand(1024→4096) → FFN Contract(4096→1024)`；另有 1D/2D repack 变体。
+- Pre block 另有 fused texture front-end：host op 列表为 `mul → ones_like → detach → cat → cat → convolution`，kernel 开头也有 `TEX` 和 feature-tile 写入。1024-byte 前缀是该 front-end 输出之后的完整 `32×32` raw E4M3 payload，不能直接按 RGB 的 `32×3` 行主序矩阵解释；其 tensor-core storage permutation 仍未恢复。随后 `_ds` output0 是无参数 2×2/stride-2 pool，output1 保留 full-resolution tensor。其后是无额外 LayerNorm 的 C32 Swin：FFN 使用 `MpCubicSiluActivation`，再做 QKV、Q/K 向量归一化、per-head FP32 cosine scale、cosine attention、softmax、值聚合、输出投影和残差。
+- 其余 fused Swin：无额外 LayerNorm；FFN 使用 `MpCubicSiluActivation`，再做 QKV、Q/K 向量归一化、per-head FP32 cosine scale、cosine attention、softmax、值聚合、输出投影和残差；包含 shifted/non-shifted 版本。
+- Split-Swin 512：两条 `512→512` FFN 支路，其中一条经过 `MpCubicSiLU` 后与另一条逐元素相乘，再经 `FFwdProj(residual scale)`；随后是 `QKVAttn → Proj/ProjPool(residual scale)`。最后一个 encoder block 的 `ProjPool` 产出全分辨率 512 通道 residual 和固定 2×2 pooled 512 通道分支，单个 `512→1024` pointwise `FinalHead` 作用于 pooled 分支；前者作为 output 1 decoder skip，后者作为 output 0 的 ViT 输入。
+- ViT 1024：`FFN Expand(1024→4096) → MpCubicSiLU → FFN Contract(4096→1024) → QKV(Q/K normalize × sqrt(32)) → layer3 score scalar → 自定义 exp/reciprocal attention → Projection`；另有 1D/2D repack 变体。
 - Decoder：`CCDecInputUpsample` 和四级 Swin upsample，将主分支与对应 encoder output 1 合并。
-- Post-block：输出卷积/残差后执行普通 blend、simple blend 或 ControlMask blend。
+- Post-block：先执行 `main_depthwise_projection + enc0_skip * inp_upsample_input_scale`，再走 C32 Swin body 和 RGB 输出卷积；最后执行普通 blend、simple blend 或 ControlMask blend。原始 RGB 是外围 blend 的 base，不是 post 的第二个 core tensor。
 
 这些是逻辑算子。Cubin 中的 `chained`、`wait`、`tilesync`、`inpview`、`outview`、`full_rect`、`fp8` 是同一逻辑层的执行变体，不是每帧都顺序执行的额外网络层。
 
@@ -164,7 +165,7 @@ Output = lerp(base_result, neural_result, effective_blend)
 
 ## 已确认边界
 
-已经恢复的是 Feature 资源接口、71-block DAG、skip 的 block/output index、层类型、通道族、权重记录边界和 Cubin kernel 集合。尚未恢复为 ONNX 的部分包括每个 fused blob 内部所有矩阵的精确 shape/stride、每个 kernel 参数结构的完整字段名、tile 调度选择条件以及 FP8 量化比例。要得到可独立运行的 PyTorch/ONNX，还需要逐个拆解 fused layer blob 并为 cosine-Swin、Split-Swin、repack 和 post-block 编写等价算子，然后用 DLL 输出做数值对齐。
+已经恢复的是 Feature 资源接口、71-block DAG、skip 的 block/output index、层类型、通道族、主要 fused blob 的矩阵 shape/offset、FP32 per-head attention scale、pre 的完整 32×32 input-prefix tile、`MpCubicSiLU`、ProjPool 的 pooled/full 双分支、FinalHead 的 pointwise/skip 分支、post 的输入 residual fusion、post tail 的 `out_gain + out_conv_weight` 分段和 Cubin kernel 集合。尚未恢复的部分包括 pre texture front-end 的 `cat/ones_like/detach` 数值组装、down/up 的精确空间重排、ViT 的 half2 exp 近似、post output tile 的 tensor-core row/lane swizzle 与 out_gain consumer、tile 调度选择条件以及 FP8 量化比例；pre weight2 的 4 个非法 E4M3 槽目前以零 fallback。可运行的 PyTorch 参考实现位于 `tools/dlss5_pytorch.py`；要达到 bit-exact，还需要用 DLL 输出继续做数值对齐。
 
 ## 复现
 

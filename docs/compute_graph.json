@@ -1,0 +1,700 @@
+{
+  "model_name": "hnet-vigilant-squid",
+  "weight_preset": "CC_Control_History_Blend_Quantize_With_Teacher_honest_tench_2026_07_04_22_30_weights",
+  "block_count": 71,
+  "blocks": [
+    {
+      "index": 0,
+      "kind": "CCTinlayoutFusedPreBlockSwin1H (downsample)",
+      "channels": "RGB texture\u2192fused 32ch\u219232",
+      "inputs": [
+        "network:rgb"
+      ],
+      "notes": "the kernel's texture front-end assembles the 32-channel input tile; output 0 continues down the encoder; output 1 is the full-resolution skip used by block 70"
+    },
+    {
+      "index": 1,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        0
+      ],
+      "notes": ""
+    },
+    {
+      "index": 2,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        1
+      ],
+      "notes": ""
+    },
+    {
+      "index": 3,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        2
+      ],
+      "notes": ""
+    },
+    {
+      "index": 4,
+      "kind": "CCTinlayoutFusedSwin1H (downsample)",
+      "channels": "32\u219264",
+      "inputs": [
+        3
+      ],
+      "notes": "output 1 is the 32-channel skip used by block 66"
+    },
+    {
+      "index": 5,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        4
+      ],
+      "notes": ""
+    },
+    {
+      "index": 6,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        5
+      ],
+      "notes": ""
+    },
+    {
+      "index": 7,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        6
+      ],
+      "notes": ""
+    },
+    {
+      "index": 8,
+      "kind": "CCTinlayoutFusedSwin2H (downsample)",
+      "channels": "64\u2192128",
+      "inputs": [
+        7
+      ],
+      "notes": "output 1 is the 64-channel skip used by block 62"
+    },
+    {
+      "index": 9,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        8
+      ],
+      "notes": ""
+    },
+    {
+      "index": 10,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        9
+      ],
+      "notes": ""
+    },
+    {
+      "index": 11,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        10
+      ],
+      "notes": ""
+    },
+    {
+      "index": 12,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        11
+      ],
+      "notes": ""
+    },
+    {
+      "index": 13,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        12
+      ],
+      "notes": ""
+    },
+    {
+      "index": 14,
+      "kind": "CCTinlayoutFusedSwin4H (downsample)",
+      "channels": "128\u2192256",
+      "inputs": [
+        13
+      ],
+      "notes": "output 1 is the 128-channel skip used by block 56"
+    },
+    {
+      "index": 15,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        14
+      ],
+      "notes": ""
+    },
+    {
+      "index": 16,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        15
+      ],
+      "notes": ""
+    },
+    {
+      "index": 17,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        16
+      ],
+      "notes": ""
+    },
+    {
+      "index": 18,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        17
+      ],
+      "notes": ""
+    },
+    {
+      "index": 19,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        18
+      ],
+      "notes": ""
+    },
+    {
+      "index": 20,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        19
+      ],
+      "notes": ""
+    },
+    {
+      "index": 21,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        20
+      ],
+      "notes": ""
+    },
+    {
+      "index": 22,
+      "kind": "CCTinlayoutFusedSwin8H (downsample)",
+      "channels": "256\u2192512",
+      "inputs": [
+        21
+      ],
+      "notes": "output 1 is the 256-channel skip used by block 48"
+    },
+    {
+      "index": 23,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        22
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 24,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        23
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 25,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        24
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 26,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        25
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 27,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        26
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 28,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        27
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 29,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        28
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 30,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        29
+      ],
+      "notes": "block 30 additionally contains CCSplitSwin16HFinalHead"
+    },
+    {
+      "index": 31,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        30
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 32,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        31
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 33,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        32
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 34,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        33
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 35,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        34
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 36,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        35
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 37,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        36
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 38,
+      "kind": "CCVit1DBlock or CCVitBlock",
+      "channels": "1024",
+      "inputs": [
+        37
+      ],
+      "notes": "factory-selected layout variant; both cubin families are embedded"
+    },
+    {
+      "index": 39,
+      "kind": "CCDecInputUpsample",
+      "channels": "1024\u2192512",
+      "inputs": [
+        {
+          "block": 38,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 30,
+          "output": 1,
+          "role": "skip"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "index": 40,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        39
+      ],
+      "notes": ""
+    },
+    {
+      "index": 41,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        40
+      ],
+      "notes": ""
+    },
+    {
+      "index": 42,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        41
+      ],
+      "notes": ""
+    },
+    {
+      "index": 43,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        42
+      ],
+      "notes": ""
+    },
+    {
+      "index": 44,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        43
+      ],
+      "notes": ""
+    },
+    {
+      "index": 45,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        44
+      ],
+      "notes": ""
+    },
+    {
+      "index": 46,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        45
+      ],
+      "notes": ""
+    },
+    {
+      "index": 47,
+      "kind": "CCSplitSwin16HBlock",
+      "channels": "512",
+      "inputs": [
+        46
+      ],
+      "notes": ""
+    },
+    {
+      "index": 48,
+      "kind": "CCTinlayoutFusedSwin8H (upsample)",
+      "channels": "512+256\u2192256",
+      "inputs": [
+        {
+          "block": 47,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 22,
+          "output": 1,
+          "role": "skip"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "index": 49,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        48
+      ],
+      "notes": ""
+    },
+    {
+      "index": 50,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        49
+      ],
+      "notes": ""
+    },
+    {
+      "index": 51,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        50
+      ],
+      "notes": ""
+    },
+    {
+      "index": 52,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        51
+      ],
+      "notes": ""
+    },
+    {
+      "index": 53,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        52
+      ],
+      "notes": ""
+    },
+    {
+      "index": 54,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        53
+      ],
+      "notes": ""
+    },
+    {
+      "index": 55,
+      "kind": "CCTinlayoutFusedSwin8H",
+      "channels": "256",
+      "inputs": [
+        54
+      ],
+      "notes": ""
+    },
+    {
+      "index": 56,
+      "kind": "CCTinlayoutFusedSwin4H (upsample)",
+      "channels": "256+128\u2192128",
+      "inputs": [
+        {
+          "block": 55,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 14,
+          "output": 1,
+          "role": "skip"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "index": 57,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        56
+      ],
+      "notes": ""
+    },
+    {
+      "index": 58,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        57
+      ],
+      "notes": ""
+    },
+    {
+      "index": 59,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        58
+      ],
+      "notes": ""
+    },
+    {
+      "index": 60,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        59
+      ],
+      "notes": ""
+    },
+    {
+      "index": 61,
+      "kind": "CCTinlayoutFusedSwin4H",
+      "channels": "128",
+      "inputs": [
+        60
+      ],
+      "notes": ""
+    },
+    {
+      "index": 62,
+      "kind": "CCTinlayoutFusedSwin2H (upsample)",
+      "channels": "128+64\u219264",
+      "inputs": [
+        {
+          "block": 61,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 8,
+          "output": 1,
+          "role": "skip"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "index": 63,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        62
+      ],
+      "notes": ""
+    },
+    {
+      "index": 64,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        63
+      ],
+      "notes": ""
+    },
+    {
+      "index": 65,
+      "kind": "CCTinlayoutFusedSwin2H",
+      "channels": "64",
+      "inputs": [
+        64
+      ],
+      "notes": ""
+    },
+    {
+      "index": 66,
+      "kind": "CCTinlayoutFusedSwin1H (upsample)",
+      "channels": "64+32\u219232",
+      "inputs": [
+        {
+          "block": 65,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 4,
+          "output": 1,
+          "role": "skip"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "index": 67,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        66
+      ],
+      "notes": ""
+    },
+    {
+      "index": 68,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        67
+      ],
+      "notes": ""
+    },
+    {
+      "index": 69,
+      "kind": "CCTinlayoutFusedSwin1H",
+      "channels": "32",
+      "inputs": [
+        68
+      ],
+      "notes": ""
+    },
+    {
+      "index": 70,
+      "kind": "CCTinlayoutFusedPostBlockSwin1H",
+      "channels": "32+enc0-skip(32)\u2192RGB",
+      "inputs": [
+        {
+          "block": 69,
+          "output": 0,
+          "role": "main"
+        },
+        {
+          "block": 0,
+          "output": 1,
+          "role": "encoder skip"
+        }
+      ],
+      "notes": "enc0 skip is block0's full-resolution 32-channel output; contains blend_scale and optional ControlMask/simple-blend output variants"
+    }
+  ]
+}
