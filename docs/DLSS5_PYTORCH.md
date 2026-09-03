@@ -86,10 +86,12 @@ simple-blend 尾部是 `output = neural + blend * (base - neural)`，因此
 checkpoint 含 145,754,963 个参数，约 291.8 MB；从磁盘重新加载后可独立执行。
 
 这仍是“可执行参考翻译”，不是 bit-exact 克隆。把与 native worker 相同的
-256×256 deterministic RGB 输入送入两条路径后，当前 PyTorch 输出裁剪到 `[0,1]`
-的 RGB MAE 为 `0.45909`（RMSE `0.52415`）。这个较大的差距符合尚未恢复的 pre
-texture feature assembly、tensor-core storage permutation、transition 空间重排和
-post output swizzle；后续校准应以这个 golden pair 为基线，而不能把“全有限”误当成
+256×256 deterministic RGB 输入送入两条路径后，使用默认的
+`post_output_layout="column_major_prefix"`，PyTorch 输出裁剪到 `[0,1]` 的 RGB
+MAE/RMSE 分别为：variant 0 `0.40792/0.48164`，variant 1 `0.41632/0.48684`。
+作为布局对照，旧的 `raw` 输出在两组输入上分别为 `0.45138/0.52038` 和
+`0.45201/0.51782`。剩余差距主要来自尚未恢复的 pre texture feature assembly、
+transition 空间重排以及其他 fused tensor-core layout；“全有限”仍不能误当成
 已经复现 DLL 数值。
 
 ```python
@@ -126,7 +128,7 @@ out = temporal_net(color, history=previous_output, motion=motion, control_mask=m
 | Split-Swin | layer2 | FP8 `(1536,512)` + FP16 `attn_bias(16,64,64)` + FP32 `attn_scale(16,)` |
 | Split FinalHead | layer4 | FP8 `(1024,512)` pointwise weight + 16 bytes padding；FinalHead 作用于 `ProjPool` 的 2×2 pooled 512-channel output；host 的第二 convolution slot 在 cubin/record 中无独立权重，reference 按 identity 表达 |
 | 普通/transition Swin | layer0 | `weight1/2` FP8，FFN 宽度 `128/224/384/704`；`qkv/projection` FP8；per-head `attn_scale` FP32；两组 `cos_skip` 和 `attn_bias` FP16。ordinary 总长 `20672/61760/197184/689232`，down/up body 及 transition matrix 也已接入 |
-| Post block70 | layer0 | 前置 `dw_weight(32,)` 与 `inp_upsample_input_scale(32,)` FP16、C32 body 的 `weight1/2/qkv/projection/cos_skip/attn_bias`、FP32 `attn_scale`，以及按注册顺序拆出的 `out_gain(8×FP16)` + padded FP16 `out_conv_weight(16×32)` 已接入；`out_gain` 当前 8 个值全为 0，静态只确认它被注册、未确认独立 consumer；默认保留 raw fallback，也可用 `post_output_layout="tensor_core_candidate"` 试验由有效行列掩码推导的 4×32 tile；动态 `sin`、正式输出 tile swizzle 仍 unresolved |
+| Post block70 | layer0 | 前置 `dw_weight(32,)` 与 `inp_upsample_input_scale(32,)` FP16、C32 body 的 `weight1/2/qkv/projection/cos_skip/attn_bias`、FP32 `attn_scale`，以及按注册顺序拆出的 `out_gain(8×FP16)` + padded FP16 `out_conv_weight(16×32)` 已接入；sm_120 的两次 512-half global load 与 native golden 回归支持将前 96 half 按 `K=32,N=3` column-major 重解释，默认使用 `post_output_layout="column_major_prefix"`；`raw` 与 `tensor_core_candidate` 仍保留作对照；`out_gain` 当前 8 个值全为 0 |
 | Pre block0 | layer0 | 1024-byte `32×32` E4M3 raw tile + C32 body；完整 raw payload 装入 `pre_texture_adapter` 作为探索入口，但 texture front-end 和 tensor-core storage permutation 仍未解出；没有 front-end 时保留一个明确标注为 fallback 的 RGB 1×1 projection；block0 output0 是无参数 2×2 pool；`weight2` 的 4 个非法槽置零作为运行 fallback |
 | Decoder input block39 | layer0 | FP8 `(512,1024)` projection + FP16 `(512,)` channel scale；`sin/tile` 插值路径用 bilinear reference 表达 |
 
@@ -143,6 +145,6 @@ net, weight_map = DLSS5Graph.with_weight_map(
 print(net.weight_report)
 ```
 
-`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre 的完整 32×32 raw input-prefix payload、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；`out_gain` 已解码且 8 个值全为 0，但目前只能确认它被注册，无法仅凭 index-based binding 证明是 padding 或没有 consumer；输出 tile 的 tensor-core row/lane swizzle 仍未证明。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `cat/ones_like/detach` 数值实现及其 prefix storage permutation、block0 `weight2`、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
+`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre 的完整 32×32 raw input-prefix payload、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；默认把前 96 half 按 column-major `K=32,N=3` 重解释，来自 sm_120 load stride 和 golden 回归，`raw` 与 hole-compressed `tensor_core_candidate` 仍可用于对照。`out_gain` 已解码且 8 个值全为 0。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `cat/ones_like/detach` 数值实现及其 prefix storage permutation、block0 `weight2`、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
 
 剩余的 pre texture front-end 数值组装、downsample/upsample 的精确空间重排、block39 的 `sin/tile` 插值、ViT half2 exp 的 bit-exact 实现、post output tile 的 tensor-core swizzle/out_gain consumer 仍是 fused layout；pre `weight2` 的 4 个非法槽目前只能用零 fallback。要达到 bit-exact，还需要继续从对应 kernel 的 load stride 和 DLL golden 输出校准这些布局及每层量化参数。

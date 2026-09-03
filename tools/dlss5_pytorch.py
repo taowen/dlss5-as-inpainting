@@ -270,6 +270,25 @@ def decode_post_output_tile_candidate(tile: Tensor, output_channels: int = 3) ->
     return logical[:output_channels]
 
 
+def decode_post_output_tile_column_major(tile: Tensor, output_channels: int = 3) -> Tensor:
+    """Decode the leading post-output tile as a column-major ``K x N`` tile.
+
+    The post kernel loads the 16x32 FP16 tail as a linear 512-half fragment,
+    while its final RGB matrix is consumed as ``K=32, N=3``.  Reinterpreting
+    the leading ``32 * N`` values as ``(K, N)`` and transposing produces the
+    logical PyTorch ``(N, K)`` weight.  This is the layout selected by the
+    native golden-frame regression; the older ``raw`` and hole-compressed
+    candidates remain available for forensic comparison.
+    """
+
+    if tuple(tile.shape) != (16, 32):
+        raise ValueError(f"post output tile must have shape (16, 32), got {tuple(tile.shape)}")
+    if output_channels < 1 or output_channels > 16:
+        raise ValueError("post output column-major tile supports 1..16 output channels")
+    leading = tile.flatten()[: 32 * output_channels]
+    return leading.reshape(32, output_channels).transpose(0, 1).contiguous()
+
+
 # The fused kernels use ``MpCubicSiluActivation`` rather than GELU.  These
 # are the exact half constants embedded in the sm_86/sm_120 SASS path.  The
 # expression is written in the same order as the host op list:
@@ -721,6 +740,8 @@ class WindowCosineAttention(nn.Module):
         use_qkv: bool = True,
         use_projection: bool = True,
         shift_size: int = 0,
+        fp8_qkv: bool = False,
+        fp8_output: bool = False,
     ) -> None:
         super().__init__()
         if dim % heads:
@@ -730,6 +751,8 @@ class WindowCosineAttention(nn.Module):
         self.head_dim = dim // heads
         self.window_size = window_size
         self.shift_size = shift_size
+        self.fp8_qkv = fp8_qkv
+        self.fp8_output = fp8_output
         self.qkv = nn.Linear(dim, 3 * dim, bias=False) if use_qkv else None
         self.proj = nn.Linear(dim, dim, bias=False) if use_projection else nn.Identity()
         # The host op list has a direct ``mul`` after Q/K normalization.  The
@@ -765,9 +788,13 @@ class WindowCosineAttention(nn.Module):
         x, h, w = _pad_nhwc(x, self.window_size)
         if self.shift_size:
             x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-        qkv = _fp8_boundary(self, self.qkv(x))
+        qkv = self.qkv(x)
+        if self.fp8_qkv:
+            qkv = _fp8_boundary(self, qkv)
         mask = _shift_mask(h, w, self.window_size, self.shift_size, x.device)
-        out = _fp8_boundary(self, self._attend(qkv, h, w, mask))
+        out = self._attend(qkv, h, w, mask)
+        if self.fp8_output:
+            out = _fp8_boundary(self, out)
         if self.shift_size:
             out = torch.roll(out, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         out = out[:, :original_h, :original_w, :]
@@ -778,7 +805,8 @@ class WindowCosineAttention(nn.Module):
         original_h, original_w = qkv.shape[1:3]
         qkv, h, w = _pad_nhwc(qkv, self.window_size)
         out = self._attend(qkv, h, w, None)
-        return _fp8_boundary(self, out[:, :original_h, :original_w, :])
+        out = out[:, :original_h, :original_w, :]
+        return _fp8_boundary(self, out) if self.fp8_output else out
 
 
 class CCTVitAttention(nn.Module):
@@ -1007,7 +1035,12 @@ class SplitSwinBlock(nn.Module):
         if dim != 512:
             raise ValueError("the embedded Split-Swin implementation is specialized for 512 channels")
         self.qkv_attn = WindowCosineAttention(
-            dim, heads=16, window_size=window_size, use_projection=False
+            dim,
+            heads=16,
+            window_size=window_size,
+            use_projection=False,
+            fp8_qkv=True,
+            fp8_output=True,
         )
         self.projection = nn.Linear(dim, dim, bias=False)
         self.attn_cos_skip = nn.Parameter(torch.ones(dim))
@@ -1105,11 +1138,14 @@ class DLSS5Graph(nn.Module):
         output_channels: int = 3,
         window_size: int = 8,
         vit_layout: str = "2d",
-        post_output_layout: str = "raw",
+        post_output_layout: str = "column_major_prefix",
     ) -> None:
         super().__init__()
-        if post_output_layout not in {"raw", "tensor_core_candidate"}:
-            raise ValueError("post_output_layout must be 'raw' or 'tensor_core_candidate'")
+        if post_output_layout not in {"raw", "column_major_prefix", "tensor_core_candidate"}:
+            raise ValueError(
+                "post_output_layout must be 'raw', 'column_major_prefix', or "
+                "'tensor_core_candidate'"
+            )
         self.color_channels = color_channels
         self.history_channels = history_channels
         self.motion_channels = motion_channels
@@ -1752,6 +1788,12 @@ class DLSS5Graph(nn.Module):
                     "tensor_core_candidate post output layout supports at most 4 channels"
                 )
             logical_output = decode_post_output_tile_candidate(
+                padded_output,
+                output_channels=self.output_channels,
+            )
+            output_weight = logical_output.reshape(logical_output.shape[0], 32, 1, 1)
+        elif self.post_output_layout == "column_major_prefix":
+            logical_output = decode_post_output_tile_column_major(
                 padded_output,
                 output_channels=self.output_channels,
             )

@@ -123,7 +123,7 @@ block 70 同时包含普通 post-block、simple-blend 和 control-mask kernel。
 ```text
 mask = sample(ControlMask).r
 effective_blend = saturate(mask * blend_scale)
-Output = lerp(base_result, neural_result, effective_blend)
+Output = neural_result + effective_blend * (base_result - neural_result)
 ```
 
 因此 ControlMask：
@@ -131,7 +131,7 @@ Output = lerp(base_result, neural_result, effective_blend)
 - 不改变 block 0–69 产生的神经特征；
 - 不告诉网络“这里是洞，请生成未知背景”；
 - 只控制最终各像素采用多少已经计算出的 neural result；
-- `0` 选择基线结果，`1` 使用全局 `blend_scale` 允许的最大神经结果。
+- `0` 选择 neural result；`1` 选择由全局 `blend_scale` 限制的 base/neural 混合结果。
 
 ## 权重包
 

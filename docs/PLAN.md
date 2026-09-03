@@ -129,6 +129,9 @@ RightOutput = PostBlend(
     base   = RightPrefilledColor,
     neural = NeuralRight,
     weight = saturate(RightControlMask.r × blend_scale))
+
+// native simple/control-mask tail
+RightOutput = neural + weight × (base - neural)
 ```
 
 这不是左右图的简单 alpha 混合：网络在特征空间中根据 MV 融合当前右眼与左眼历史；最后的 post-block 才在基础结果与神经结果之间混合。
@@ -139,13 +142,13 @@ Cubin SASS 静态分析确认：
 
 ```text
 effective_blend = saturate(ControlMask.r × blend_scale)
-Output = lerp(BaseColor, NeuralColor, effective_blend)
+Output = NeuralColor + effective_blend × (BaseColor - NeuralColor)
 ```
 
 因此 `ControlMask`：
 
 - 只读取 R 通道；首选 R8_UNORM。
-- 0 表示选择基础结果，1 表示允许完整的全局神经强度。
+- 0 表示保留神经结果，1 表示按 `blend_scale` 限制在基础结果与神经结果之间混合。
 - 不进入 Encoder，不是显式的 inpainting condition。
 - 适合把神经修改集中到洞区和遮挡边缘，但不能保证生成真实的未知背景。
 

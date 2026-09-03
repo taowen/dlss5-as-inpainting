@@ -36,7 +36,11 @@ def main() -> int:
     parser.add_argument("--variant", type=int, choices=(0, 1), default=1)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("float16", "float32"), default="float16")
-    parser.add_argument("--post-output-layout", choices=("raw", "tensor_core_candidate"), default="raw")
+    parser.add_argument(
+        "--post-output-layout",
+        choices=("raw", "column_major_prefix", "tensor_core_candidate"),
+        default="column_major_prefix",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
