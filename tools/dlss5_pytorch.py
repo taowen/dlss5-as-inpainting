@@ -1127,7 +1127,8 @@ class DLSS5Graph(nn.Module):
     confirmed 3 input channels.  ``pre_features=`` is an advanced hook for
     the 32-channel tensor produced by the unresolved CUDA texture front-end;
     when supplied, it enters the C32 body through an identity adapter.  The
-    two serialized FP16 front tiles are retained for future front-end work.
+    more precise ``pre_front_features=`` hook accepts the 16-channel tensor
+    before the serialized FP16 front projection and applies both tiles.
     """
 
     def __init__(
@@ -1277,9 +1278,24 @@ class DLSS5Graph(nn.Module):
         rgb: Tensor,
         base_color: Tensor,
         pre_features: Optional[Tensor] = None,
+        pre_front_features: Optional[Tensor] = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         # block 0: pre block, retaining the full-resolution skip.
-        if pre_features is None:
+        if pre_features is not None and pre_front_features is not None:
+            raise ValueError("pre_features and pre_front_features are mutually exclusive")
+        if pre_front_features is not None:
+            if pre_front_features.ndim != 4 or pre_front_features.shape[1] != 16:
+                raise ValueError("pre_front_features must be NCHW with exactly 16 channels")
+            if pre_front_features.shape[0] != rgb.shape[0] or pre_front_features.shape[2:] != rgb.shape[2:]:
+                raise ValueError("pre_front_features must have the same batch and spatial shape as rgb")
+            front_weight = torch.cat(
+                (self.pre_front_weight0_f16, self.pre_front_weight1_f16), dim=0
+            ).to(device=pre_front_features.device, dtype=pre_front_features.dtype)
+            x = _fp8_boundary(
+                self,
+                F.conv2d(pre_front_features, front_weight.view(32, 16, 1, 1)),
+            )
+        elif pre_features is None:
             x = _fp8_boundary(self, self.input_adapter(rgb))
         else:
             if pre_features.ndim != 4 or pre_features.shape[1] != 32:
@@ -1356,10 +1372,16 @@ class DLSS5Graph(nn.Module):
         *,
         rgb: Optional[Tensor] = None,
         pre_features: Optional[Tensor] = None,
+        pre_front_features: Optional[Tensor] = None,
         return_features: bool = False,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
         assembled, base_color = self._assemble_input(color, history, motion, rgb)
-        neural, features = self._run(assembled, base_color, pre_features=pre_features)
+        neural, features = self._run(
+            assembled,
+            base_color,
+            pre_features=pre_features,
+            pre_front_features=pre_front_features,
+        )
         base = self._fit_channels(base_color, self.output_channels)
         if control_mask is None:
             weight = self.blend_scale.to(dtype=neural.dtype, device=neural.device)
