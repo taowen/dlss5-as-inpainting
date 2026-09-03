@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.obj
+tools/*.exe
+
+# Reproducible local extraction/export and runtime evidence artifacts.
+DLSS5-extracted/
+runtime_probe_output/

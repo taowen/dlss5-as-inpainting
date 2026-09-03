@@ -195,6 +195,22 @@ def decode_s_e4m3(values: Tensor) -> Tensor:
     return torch.where(nan, torch.full_like(result, float("nan")), result)
 
 
+def quantize_s_e4m3_satfinite(values: Tensor) -> Tensor:
+    """Round-trip an activation through the cubin's saturating E4M3 format.
+
+    The quantized kernels accumulate with ``QMMA.*.F16.E4M3.E4M3`` and emit
+    activations with ``F2FP.SATFINITE.E4M3.F16``.  A plain PyTorch graph must
+    preserve that boundary: carrying the accumulators forward as unrestricted
+    FP32 values overflows in the gated Split-Swin stack.  PyTorch's E4M3FN cast
+    has the required rounding, while the explicit clamp supplies SATFINITE
+    behavior for values outside the representable range.
+    """
+
+    finite = torch.nan_to_num(values, nan=0.0, posinf=448.0, neginf=-448.0)
+    finite = finite.clamp(-448.0, 448.0)
+    return finite.to(torch.float8_e4m3fn).to(values.dtype)
+
+
 def decode_fp8_matrix(
     values: bytes | Tensor,
     shape: tuple[int, ...],
@@ -1147,6 +1163,52 @@ class DLSS5Graph(nn.Module):
         self.post_out = nn.Conv2d(32, output_channels, 1, bias=False)
         self.blend_scale = nn.Parameter(torch.tensor(0.73974609375), requires_grad=False)
         self.weight_report: Optional[dict[str, Any]] = None
+        self._fp8_emulation_handles: list[Any] = []
+
+    @staticmethod
+    def _quantize_module_output(_module: nn.Module, _inputs: tuple[Any, ...], output: Any) -> Any:
+        if isinstance(output, Tensor):
+            return quantize_s_e4m3_satfinite(output)
+        if isinstance(output, tuple):
+            return tuple(
+                quantize_s_e4m3_satfinite(item) if isinstance(item, Tensor) else item
+                for item in output
+            )
+        return output
+
+    def enable_fp8_emulation(self) -> "DLSS5Graph":
+        """Emulate the activation storage boundaries of the quantized cubins.
+
+        Matrix outputs and fused-block outputs are rounded to saturating E4M3.
+        The final projection is included as well: its tensor-core accumulator
+        can exceed FP16 before the post kernel's output conversion. Calling
+        this method more than once is harmless.
+        """
+
+        if self._fp8_emulation_handles:
+            return self
+        boundary_types = (
+            SwinBlock,
+            SplitSwinBlock,
+            ViTBlock,
+            SwinTransitionDown,
+            SwinTransitionUp,
+            DecInputUpsample,
+            PreSwinDownsample,
+        )
+        for name, module in self.named_modules():
+            is_matrix = isinstance(module, (nn.Linear, nn.Conv2d))
+            if is_matrix or isinstance(module, boundary_types):
+                self._fp8_emulation_handles.append(
+                    module.register_forward_hook(self._quantize_module_output)
+                )
+        return self
+
+    def disable_fp8_emulation(self) -> "DLSS5Graph":
+        for handle in self._fp8_emulation_handles:
+            handle.remove()
+        self._fp8_emulation_handles.clear()
+        return self
 
     @staticmethod
     def _fit_channels(x: Tensor, channels: int) -> Tensor:

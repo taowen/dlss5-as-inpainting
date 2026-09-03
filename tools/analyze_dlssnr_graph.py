@@ -69,19 +69,38 @@ def parse_weights(path: Path) -> dict[str, object]:
     }
 
 
-def parse_cubins(root: Path, readelf: str) -> dict[str, object]:
+def parse_cubins(
+    root: Path,
+    readelf: str,
+    *,
+    cuobjdump: str | None = None,
+    architecture: str = "sm_86",
+) -> dict[str, object]:
     groups: list[dict[str, object]] = []
-    for cubin in sorted(root.glob("fatbin_*/*.sm_86.cubin")):
-        output = subprocess.run(
-            [readelf, "-s", "--wide", str(cubin)],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        kernels = []
-        for line in output.splitlines():
-            if " FUNC " in line and " GLOBAL " in line:
-                kernels.append(line.split()[-1])
+    for cubin in sorted(root.glob(f"fatbin_*/*.{architecture}.cubin")):
+        if cuobjdump:
+            output = subprocess.run(
+                [cuobjdump, "--dump-elf-symbols", str(cubin)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            kernels = [
+                line.split()[-1]
+                for line in output.splitlines()
+                if line.startswith("STT_FUNC") and "STO_ENTRY" in line
+            ]
+        else:
+            output = subprocess.run(
+                [readelf, "-s", "--wide", str(cubin)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            kernels = []
+            for line in output.splitlines():
+                if " FUNC " in line and " GLOBAL " in line:
+                    kernels.append(line.split()[-1])
         groups.append(
             {
                 "group": cubin.parent.name,
@@ -91,7 +110,7 @@ def parse_cubins(root: Path, readelf: str) -> dict[str, object]:
             }
         )
     return {
-        "architecture_used_for_symbols": "sm_86",
+        "architecture_used_for_symbols": architecture,
         "group_count": len(groups),
         "unique_kernel_count": sum(int(group["kernel_count"]) for group in groups),
         "groups": groups,
@@ -179,11 +198,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("extracted", type=Path)
     parser.add_argument("--readelf", default="llvm-readelf")
+    parser.add_argument("--cuobjdump")
+    parser.add_argument("--cubins", type=Path)
+    parser.add_argument("--architecture", default="sm_86")
     args = parser.parse_args()
     root = args.extracted.resolve()
 
     weights = parse_weights(root / "WEIGHTS_HT.bin")
-    cubins = parse_cubins(root / "cubins", args.readelf)
+    cubin_root = args.cubins.resolve() if args.cubins else root / "cubins"
+    cubins = parse_cubins(
+        cubin_root,
+        args.readelf,
+        cuobjdump=args.cuobjdump,
+        architecture=args.architecture,
+    )
     graph = graph_manifest()
 
     (root / "weights_manifest.json").write_text(json.dumps(weights, indent=2) + "\n")
@@ -191,7 +219,7 @@ def main() -> None:
     (root / "compute_graph.json").write_text(json.dumps(graph, indent=2) + "\n")
     print(
         f"{weights['record_count']} tensors, {graph['block_count']} blocks, "
-        f"{cubins['unique_kernel_count']} SM86 kernel entry points"
+        f"{cubins['unique_kernel_count']} {args.architecture} kernel entry points"
     )
 
 

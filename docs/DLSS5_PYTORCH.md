@@ -49,9 +49,41 @@ decoder_skip = full
 ## 运行
 
 ```bash
+python tools/extract_dlssnr_resources.py bin/nvngx_dlssnr.dll
 python3 tools/dlss5_pytorch.py --self-test
 python3 tools/dlss5_pytorch.py --weights DLSS5-extracted/WEIGHTS_HT.bin
+python tools/probe_dlss5_pytorch.py --weights DLSS5-extracted --device cuda --dtype float16 --size 256
+python tools/export_dlss5_pytorch.py --weights DLSS5-extracted
+python tools/run_dlss5_pytorch.py DLSS5-extracted/dlss5_pytorch_reference_fp16.pt --device cuda --size 256
 ```
+
+`WEIGHTS_HT.bin` 不需要另行寻找：它是 `nvngx_dlssnr.dll` 中类型 10、名称
+`WEIGHTS_HT` 的 PE 资源。提取后大小为 147,695,410 bytes，共 153 条记录。
+
+量化 CUBIN 在矩阵乘法中使用 `QMMA.*.F16.E4M3.E4M3`，并以
+`F2FP.SATFINITE.E4M3.F16` 写出中间 activation。加载真实权重运行时必须保留
+这个边界：
+
+```python
+net, weight_map = DLSS5Graph.with_weight_map("DLSS5-extracted", load_known=True)
+net.enable_fp8_emulation()
+net = net.half().cuda().eval()
+```
+
+如果关闭 FP8 emulation，让融合层的中间结果一直以不受限 FP32 传播，gated
+Split-Swin 会逐层放大并产生非有限值；这不是原始量化 CUBIN 的执行方式。
+
+本机 RTX 5080（PyTorch 2.11.0+cu128，原生 `sm_120`）验证结果：完整 71-block
+图以 FP16 计算、E4M3 activation round-trip 执行 256×256 输入，输出
+196,608/196,608 元素全部有限，单次约 0.70 秒，峰值显存约 616 MiB。导出的
+checkpoint 含 145,754,963 个参数，约 291.8 MB；从磁盘重新加载后可独立执行。
+
+这仍是“可执行参考翻译”，不是 bit-exact 克隆。把与 native worker 相同的
+256×256 deterministic RGB 输入送入两条路径后，当前 PyTorch 输出裁剪到 `[0,1]`
+的 RGB MAE 为 `0.48527`（RMSE `0.54778`）。这个较大的差距符合尚未恢复的 pre
+texture feature assembly、tensor-core storage permutation、transition 空间重排和
+post output swizzle；后续校准应以这个 golden pair 为基线，而不能把“全有限”误当成
+已经复现 DLL 数值。
 
 ```python
 from tools.dlss5_pytorch import DLSS5Graph
@@ -104,6 +136,6 @@ net, weight_map = DLSS5Graph.with_weight_map(
 print(net.weight_report)
 ```
 
-`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre 的完整 32×32 raw input-prefix payload、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；`out_gain` 已解码且 8 个值全为 0，但目前只能确认它被注册，无法仅凭 index-based binding 证明是 padding 或没有 consumer；输出 tile 的 tensor-core row/lane swizzle 仍未证明。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `cat/ones_like/detach` 数值实现及其 prefix storage permutation、block0 `weight2`、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。由于记录中的 FP8 是未带运行时量化 scale 的原始字节，直接把它们当真实浮点权重用于整网推理可能溢出；这不影响内部布局和算子语义的验证。
+`load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre 的完整 32×32 raw input-prefix payload、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；`out_gain` 已解码且 8 个值全为 0，但目前只能确认它被注册，无法仅凭 index-based binding 证明是 padding 或没有 consumer；输出 tile 的 tensor-core row/lane swizzle 仍未证明。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `cat/ones_like/detach` 数值实现及其 prefix storage permutation、block0 `weight2`、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
 
 剩余的 pre texture front-end 数值组装、downsample/upsample 的精确空间重排、block39 的 `sin/tile` 插值、ViT half2 exp 的 bit-exact 实现、post output tile 的 tensor-core swizzle/out_gain consumer 仍是 fused layout；pre `weight2` 的 4 个非法槽目前只能用零 fallback。要达到 bit-exact，还需要继续从对应 kernel 的 load stride 和 DLL golden 输出校准这些布局及每层量化参数。
