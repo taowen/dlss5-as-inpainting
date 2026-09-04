@@ -154,3 +154,12 @@ was unchanged, while the history-after-color output changed with MAE
 `0.0038043`, RMSE `0.0066071`, and `149,982/262,144` elements above `1e-3`.
 This is consistent with a temporal/state-dependent coordinate path and is not
 yet a recovered texture-lane formula.
+
+A second live experiment changed the first pre `TEX` component mask from
+`0x7` to `0x1` while preserving the rest of the instruction. The patched DLL
+still initialized and evaluated at 256² on the RTX 5080, but its RGB output
+was exactly zero (alpha remained one). This confirms that the full RGB result
+of that texture read participates in the front feature assembly; a single
+component cannot serve as the PyTorch front input. The experiment also
+validates that the patcher can change a SASS modifier/control field and keep
+the compressed bundle loadable.
