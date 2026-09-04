@@ -173,6 +173,12 @@ is the missing pre-front tensor producer and its driver resource bindings. The p
 device hang, so the next safe step is to decode the high-frequency private
 slot structures/resource handles rather than mutate another store.
 
+The 147 MiB model UAV is now separately capturable. Its snapshot maps all 153
+serialized `WEIGHTS_HT` records byte-for-byte after native alignment, including
+block0 front-tile offsets `0x2010` and `0x2210`; the coordinate mutation leaves
+this buffer unchanged. The dynamic 15.7 MiB UAV is therefore the remaining
+activation/command-memory target for exact intermediate recovery.
+
 The table mechanism is undocumented by NVIDIA; the public CUDA API documents
 the normal `cuLaunchKernel` route, not this table. The implementation is
 therefore pinned to the observed driver build and remains a diagnostic hook,

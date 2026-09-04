@@ -243,6 +243,18 @@ driver-owned arena remains GPU VA `0x1ba00000`, size `0xefbc00`, with UAV flags;
 the other 15.7 MiB buffers appearing in the log are the readback resources
 created by the capture hook itself (COPY_DEST, distinct GPU virtual addresses).
 
+The explicit `--capture-model-buffers` mode then captured the 147,719,680-byte
+UAV at GPU VA `0x9e00000`. `tools/analyze_dlss5_model_buffer.py --strict`
+locates all 153 `WEIGHTS_HT` records in that GPU snapshot and compares every
+record byte, not just a checksum or a sample. The result is `bit_exact=true`
+with 153/153 full-record matches; the buffer is `0x5ece` bytes larger than the
+serialized resource because of the native record alignment. The block0 front
+tiles map to buffer offsets `0x2010` and `0x2210`, exactly the offsets used by
+the sm_120 `LDG` instructions. A coordinate mutation leaves this model buffer
+byte-identical and changes only the separate 15.7 MiB dynamic arena, proving
+that the remaining mismatch is not caused by weight extraction or weight
+placement.
+
 Component-level masks provide an additional lane constraint. With the same
 carrier and temporal sequence, masking each TEX to two components produced:
 

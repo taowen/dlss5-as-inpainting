@@ -520,6 +520,7 @@ def run_case(
         if (
             args.capture_driver_buffers
             or args.capture_driver_buffers_all
+            or args.capture_model_buffers
             or args.capture_driver_buffers_all_dispatches
         ):
             env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS"] = "1"
@@ -529,13 +530,24 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL", None)
+        if args.capture_model_buffers:
+            env["DLSS5_D3D12_CAPTURE_MODEL_BUFFERS"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_MODEL_BUFFERS", None)
         if args.capture_driver_buffers_all_dispatches:
             env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL_DISPATCHES"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL_DISPATCHES", None)
-        env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
-        for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
+        if args.dump_dark_structs or args.dump_dark_deep:
+            env.pop("DLSS5_DARK_NO_PRIVATE_HOOK", None)
+        else:
+            env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
+        for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_DUMP_DEEP", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
+        if args.dump_dark_structs or args.dump_dark_deep:
+            env["DLSS5_DARK_DUMP_STRUCTS"] = "1"
+        if args.dump_dark_deep:
+            env["DLSS5_DARK_DUMP_DEEP"] = "1"
         old_env = os.environ.copy()
         os.environ.update(env)
         try:
@@ -633,6 +645,11 @@ def main() -> int:
     parser.add_argument("--input", choices=("color", "checker"), default="color")
     parser.add_argument("--only", action="append", help="run only the named mutation; repeatable")
     parser.add_argument(
+        "--baseline-only",
+        action="store_true",
+        help="run the unmodified carrier once and skip all mutations",
+    )
+    parser.add_argument(
         "--capture-all-neural",
         action="store_true",
         help="capture every resolved 2D descriptor around each Neural dispatch",
@@ -655,12 +672,27 @@ def main() -> int:
     parser.add_argument(
         "--capture-driver-buffers-all",
         action="store_true",
-        help="capture every driver-owned UAV between 1 MiB and 64 MiB",
+        help="capture every driver-owned UAV between 1 MiB and 512 MiB",
+    )
+    parser.add_argument(
+        "--capture-model-buffers",
+        action="store_true",
+        help="capture the 147,719,680-byte model/activation buffer",
     )
     parser.add_argument(
         "--capture-driver-buffers-all-dispatches",
         action="store_true",
         help="also snapshot the tracked arena after each Original dispatch",
+    )
+    parser.add_argument(
+        "--dump-dark-structs",
+        action="store_true",
+        help="dump the top-level private driver argument structures",
+    )
+    parser.add_argument(
+        "--dump-dark-deep",
+        action="store_true",
+        help="also follow one level of private slot 13/14 pointers",
     )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
@@ -679,7 +711,9 @@ def main() -> int:
     run_root.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="dlss5-front-mutations-") as temporary:
         contracts = write_contracts(Path(temporary), args.width, args.height)
-        selected = [mutation for mutation in MUTATIONS if not args.only or mutation["name"] in args.only]
+        selected = [] if args.baseline_only else [
+            mutation for mutation in MUTATIONS if not args.only or mutation["name"] in args.only
+        ]
         unknown = set(args.only or ()) - {mutation["name"] for mutation in MUTATIONS}
         if unknown:
             parser.error(f"unknown mutation(s): {', '.join(sorted(unknown))}")
@@ -797,7 +831,11 @@ def main() -> int:
                 "capture_before_neural": args.capture_before_neural,
                 "capture_driver_buffers": args.capture_driver_buffers,
                 "capture_driver_buffers_all": args.capture_driver_buffers_all,
+                "capture_model_buffers": args.capture_model_buffers,
                 "capture_driver_buffers_all_dispatches": args.capture_driver_buffers_all_dispatches,
+                "baseline_only": args.baseline_only,
+                "dump_dark_structs": args.dump_dark_structs,
+                "dump_dark_deep": args.dump_dark_deep,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

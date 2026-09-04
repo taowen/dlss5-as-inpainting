@@ -42,11 +42,26 @@ using CuGetExportTableFn = CUresult(__stdcall *)(const void **, const void *);
 using CuLaunchKernelFn = CUresult(__stdcall *)(CUfunction, unsigned int, unsigned int, unsigned int,
                                                 unsigned int, unsigned int, unsigned int, unsigned int,
                                                 CUstream, void **, void **);
+struct CuLaunchConfig {
+    unsigned int grid_x;
+    unsigned int grid_y;
+    unsigned int grid_z;
+    unsigned int block_x;
+    unsigned int block_y;
+    unsigned int block_z;
+    unsigned int shared_bytes;
+    CUstream stream;
+    void *attributes;
+    unsigned int attribute_count;
+};
+using CuLaunchKernelExFn = CUresult(__stdcall *)(const CuLaunchConfig *, CUfunction, void **, void **);
 
 CuModuleLoadDataFn g_cu_module_load_data = nullptr;
 CuModuleLoadDataExFn g_cu_module_load_data_ex = nullptr;
 CuModuleGetFunctionFn g_cu_module_get_function = nullptr;
 CuLaunchKernelFn g_cu_launch_kernel = nullptr;
+CuLaunchKernelExFn g_cu_launch_kernel_ex = nullptr;
+CuLaunchKernelExFn g_cu_launch_kernel_ex_ptsz = nullptr;
 CuGetExportTableFn g_cu_get_export_table = nullptr;
 unsigned int g_cuda_module_index = 0;
 
@@ -132,6 +147,20 @@ struct D3D12PendingBufferCapture {
 };
 std::vector<D3D12PendingBufferCapture> g_d3d12_pending_buffer_captures;
 std::vector<ID3D12Resource *> g_d3d12_driver_buffer_candidates;
+
+bool env_enabled(const char *name);
+
+bool should_capture_d3d12_driver_buffer(const D3D12_RESOURCE_DESC &desc) {
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return false;
+    const bool capture_all = env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL");
+    const bool capture_model = env_enabled("DLSS5_D3D12_CAPTURE_MODEL_BUFFERS");
+    const bool is_model_buffer = capture_model && desc.Width == 147719680 &&
+                                 (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+    if (is_model_buffer) return true;
+    if (capture_all)
+        return desc.Width >= 0x100000 && desc.Width <= 0x20000000;
+    return desc.Width == 15711232;
+}
 
 template <typename F>
 void log(F &&make_line);
@@ -342,10 +371,7 @@ bool capture_d3d12_texture(ID3D12GraphicsCommandList *list,
 void remember_d3d12_driver_buffer(ID3D12Resource *resource) {
     if (!resource) return;
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    const bool capture_all = env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL");
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-        (!capture_all && desc.Width != 15711232) ||
-        (capture_all && (desc.Width < 0x100000 || desc.Width > 0x4000000))) return;
+    if (!should_capture_d3d12_driver_buffer(desc)) return;
     bool added = false;
     {
         std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
@@ -377,10 +403,7 @@ bool capture_d3d12_driver_buffers(ID3D12GraphicsCommandList *list, const char *l
     for (ID3D12Resource *source : candidates) {
         if (!list || !source || !prepare_d3d12_capture_fence()) continue;
         const D3D12_RESOURCE_DESC source_desc = source->GetDesc();
-        const bool capture_all = env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL");
-        if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-            (!capture_all && source_desc.Width != 15711232) ||
-            (capture_all && (source_desc.Width < 0x100000 || source_desc.Width > 0x4000000))) continue;
+        if (!should_capture_d3d12_driver_buffer(source_desc)) continue;
 
         D3D12_HEAP_PROPERTIES heap{};
         heap.Type = D3D12_HEAP_TYPE_READBACK;
@@ -905,7 +928,7 @@ void close_dark_trace() {
 }
 
 bool write_runtime_binary(const std::string &file_name, const void *data, size_t bytes) {
-    if (!data || bytes == 0 || bytes > 0x4000000) return false;
+    if (!data || bytes == 0 || bytes > 0x20000000) return false;
     wchar_t executable_path[MAX_PATH]{};
     const DWORD executable_length = GetModuleFileNameW(nullptr, executable_path, MAX_PATH);
     if (executable_length == 0 || executable_length >= MAX_PATH) return false;
@@ -1165,6 +1188,8 @@ HRESULT STDMETHODCALLTYPE hook_d3d12_create_committed_resource(
     if (SUCCEEDED(hr) && result && *result && desc &&
         desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
         auto *resource = reinterpret_cast<ID3D12Resource *>(*result);
+        if ((desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0)
+            remember_d3d12_driver_buffer(resource);
         log([&] {
             std::ostringstream s;
             s << "d3d12_create_committed_buffer resource=0x" << std::hex
@@ -1667,6 +1692,36 @@ CUresult __stdcall hook_cu_launch_kernel(CUfunction function, unsigned int gx, u
     return g_cu_launch_kernel ? g_cu_launch_kernel(function, gx, gy, gz, bx, by, bz, shared, stream, args, extra) : 1;
 }
 
+CUresult __stdcall hook_cu_launch_kernel_ex(const CuLaunchConfig *config, CUfunction function,
+                                            void **args, void **extra) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuLaunchKernelEx function=0x" << std::hex << reinterpret_cast<uintptr_t>(function);
+        if (config) {
+            s << " grid=" << std::dec << config->grid_x << ',' << config->grid_y << ',' << config->grid_z
+              << " block=" << config->block_x << ',' << config->block_y << ',' << config->block_z
+              << " shared=" << config->shared_bytes << " stream=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(config->stream) << " attributes=0x"
+              << reinterpret_cast<uintptr_t>(config->attributes) << " attribute_count="
+              << std::dec << config->attribute_count;
+        }
+        s << " args=0x" << std::hex << reinterpret_cast<uintptr_t>(args)
+          << " extra=0x" << reinterpret_cast<uintptr_t>(extra) << " arg_values=";
+        if (args) {
+            for (unsigned int i = 0; i < 32; ++i) {
+                if (!args[i]) { s << "null,"; break; }
+                s << "0x" << std::hex << *reinterpret_cast<uint64_t *>(args[i]) << ',';
+            }
+        }
+        return s.str();
+    });
+    if (g_cu_launch_kernel_ex)
+        return g_cu_launch_kernel_ex(config, function, args, extra);
+    if (g_cu_launch_kernel_ex_ptsz)
+        return g_cu_launch_kernel_ex_ptsz(config, function, args, extra);
+    return 1;
+}
+
 void hook_cuda_proc(const char *name, FARPROC address) {
     if (!name || !address) return;
     void *replacement = nullptr;
@@ -1683,6 +1738,12 @@ void hook_cuda_proc(const char *name, FARPROC address) {
     } else if (std::strcmp(name, "cuLaunchKernel") == 0) {
         replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel);
         original = reinterpret_cast<void **>(&g_cu_launch_kernel);
+    } else if (std::strcmp(name, "cuLaunchKernelEx") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ex);
+        original = reinterpret_cast<void **>(&g_cu_launch_kernel_ex);
+    } else if (std::strcmp(name, "cuLaunchKernelEx_ptsz") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ex);
+        original = reinterpret_cast<void **>(&g_cu_launch_kernel_ex_ptsz);
     } else if (std::strcmp(name, "cuGetExportTable") == 0) {
         replacement = reinterpret_cast<void *>(&hook_cu_get_export_table);
         original = reinterpret_cast<void **>(&g_cu_get_export_table);
