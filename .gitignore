@@ -9,3 +9,4 @@ tools/*.exe
 DLSS5-extracted/
 runtime_probe_output/
 examples/.work/
+examples/cases/stereo_inpainting_spatial_mask/

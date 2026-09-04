@@ -67,21 +67,25 @@ def run_harness(
     motion: Path,
     frames: list[tuple[Path, int]],
     output: Path,
+    extra_args: list[str] | None = None,
 ) -> None:
+    command = [
+        str(harness),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--depth",
+        str(depth),
+        "--motion",
+        str(motion),
+        "--frames",
+        str(len(frames)),
+    ]
+    if extra_args:
+        command.extend(extra_args)
     process = subprocess.Popen(
-        [
-            str(harness),
-            "--width",
-            str(width),
-            "--height",
-            str(height),
-            "--depth",
-            str(depth),
-            "--motion",
-            str(motion),
-            "--frames",
-            str(len(frames)),
-        ],
+        command,
         cwd=harness.parent,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

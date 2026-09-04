@@ -1,0 +1,66 @@
+{
+  "schema": "distill_any_depth_small_v1",
+  "model": "xingyang1/Distill-Any-Depth-Small-hf",
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 5080",
+  "model_parameters": 24785089,
+  "dimensions": [
+    256,
+    256
+  ],
+  "records": {
+    "blue_marble": {
+      "input": "examples/assets/normalized/blue_marble.png",
+      "input_sha256": "a8fa954ad00d9d972356685241e1d4814358f17471320a3301a7c58acf133fbb",
+      "raw": "examples/assets/depth/distill_any_depth_small/blue_marble.r32f.bin",
+      "preview": "examples/assets/depth/distill_any_depth_small/blue_marble.png",
+      "shape": [
+        256,
+        256
+      ],
+      "normalization": "per-image min/max of predicted_depth; larger value is treated as nearer for disparity proxy",
+      "predicted_depth_min": 0.9191804528236389,
+      "predicted_depth_max": 5.018061637878418
+    },
+    "portrait_cc0": {
+      "input": "examples/assets/normalized/portrait_cc0.png",
+      "input_sha256": "3186cba4948f4087fa40b29fd85cb049298890d149ea5c7de760e9ecac6ee267",
+      "raw": "examples/assets/depth/distill_any_depth_small/portrait_cc0.r32f.bin",
+      "preview": "examples/assets/depth/distill_any_depth_small/portrait_cc0.png",
+      "shape": [
+        256,
+        256
+      ],
+      "normalization": "per-image min/max of predicted_depth; larger value is treated as nearer for disparity proxy",
+      "predicted_depth_min": 0.8107949495315552,
+      "predicted_depth_max": 4.575682640075684
+    },
+    "scenic_landscape": {
+      "input": "examples/assets/normalized/scenic_landscape.png",
+      "input_sha256": "1fff3863e062c9809f3c970ad329dd056ff55465e4d63d9b3129b3cfa35186cd",
+      "raw": "examples/assets/depth/distill_any_depth_small/scenic_landscape.r32f.bin",
+      "preview": "examples/assets/depth/distill_any_depth_small/scenic_landscape.png",
+      "shape": [
+        256,
+        256
+      ],
+      "normalization": "per-image min/max of predicted_depth; larger value is treated as nearer for disparity proxy",
+      "predicted_depth_min": 0.028667312115430832,
+      "predicted_depth_max": 6.2711615562438965
+    },
+    "stone_texture": {
+      "input": "examples/assets/normalized/stone_texture.png",
+      "input_sha256": "705026f71bf7a8887b6b41b265efb0a6a10ee62951407b5c7668befcd6dfec16",
+      "raw": "examples/assets/depth/distill_any_depth_small/stone_texture.r32f.bin",
+      "preview": "examples/assets/depth/distill_any_depth_small/stone_texture.png",
+      "shape": [
+        256,
+        256
+      ],
+      "normalization": "per-image min/max of predicted_depth; larger value is treated as nearer for disparity proxy",
+      "predicted_depth_min": 1.1317487955093384,
+      "predicted_depth_max": 7.632735729217529
+    }
+  },
+  "warning": "relative monocular depth; not metric depth and not a proof of native DLSS depth semantics"
+}

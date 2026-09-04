@@ -1,0 +1,15 @@
+{
+  "schema": "dlss5_spatial_control_mask_probe_v1",
+  "description": "A locally patched native harness accepted a per-pixel R8 mask with valid=255 and hole=0.",
+  "harness": "temporary spatial-mask dlss5_eval.exe",
+  "mask_file_convention": "RightControlMask = 1 - HoleMask; valid pixels 255, holes 0",
+  "case": "stone_texture_plane_oracle",
+  "hole_fraction": 0.0625,
+  "simple_hole_mae": 0.1521236151456833,
+  "spatial_mask_dlss5_hole_mae": 0.13796931505203247,
+  "spatial_mask_dlss5_all_mae": 0.050096362829208374,
+  "spatial_mask_vs_constant255_mae": 0.0,
+  "spatial_mask_vs_constant255_rmse": 0.0,
+  "spatial_mask_vs_constant255_max_abs": 0.0,
+  "conclusion": "The mask-file path was accepted by the temporary harness but had no observable effect in this native runtime/add-on combination. The modest hole-only improvement is therefore not evidence of selective HoleMask-gated inpainting; full-image quality still worsens versus the simple baseline."
+}

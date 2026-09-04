@@ -275,3 +275,19 @@ Capture Color/Depth
 - Feature 18 的创建/Evaluate 方式参考本地 [`dlssnr_forwarder.cpp`](OptiScaler_DLSSNR/OptiScaler/dlssnr/forwarder/dlssnr_forwarder.cpp)。
 - `Color/prev_output/MVec` 接线、Depth 未进入当前核心、ControlMask 的最终混合行为来自本地 [`nvngx_dlssnr.dll`](DLSS.5.Visual.Enhancer.v3.0/bin/runtime/nvngx_dlssnr.dll) 静态分析，详见 [`DLSS5_COMPUTE_GRAPH.md`](DLSS5_COMPUTE_GRAPH.md)。
 - 本方案中的左右眼虚拟时序、深度几何 MV 和每对双目图 Reset 是工程设计，需要按上述验证顺序实测，不作为 NVIDIA 已公开保证的用途。
+
+## 2026-09-05 实验状态
+
+已使用 Distill-Any-Depth small 对公开图片生成相对深度，并完成了
+`Left Reset=1 -> Right Reset=0` 的 stereo forward-splat 实验。实验结果与完整图片、
+HoleMask、Motion Vector 和 JSON 指标见
+[`DLSS5_STEREO_EXPERIMENTS.md`](DLSS5_STEREO_EXPERIMENTS.md)。
+
+当前结论不是“DLSS5 已解决双目洞填补”：在可构造 ground truth 的平面纹理 oracle 中，
+DLSS5 将洞区 MAE 从 `0.15212` 降到 `0.13797`，但全图 MAE 从 `0.00951` 升到 `0.05010`；
+随后已用临时 spatial mask-file harness 提交 `valid=255/hole=0` 的 R8 mask，结果与
+`mask=255` 仍逐值一致。说明当前 runtime/add-on 的 ControlMask 绑定没有可观测效果，
+这次洞区改善不能证明是 selective inpainting。
+
+因此下一步应先用 launch/resource telemetry 定位 ControlMask 是否真正绑定到 native
+执行链，再用有真实遮挡背景的 layered scene 做最终判定。

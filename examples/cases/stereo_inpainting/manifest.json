@@ -1,0 +1,126 @@
+{
+  "schema": "dlss5_stereo_inpainting_v1",
+  "harness": "dlss5_eval.exe",
+  "dimensions": [
+    256,
+    256
+  ],
+  "depth_model": "Distill-Any-Depth-Small-hf for predicted_depth cases",
+  "geometry": {
+    "target_x": "round(source_x - (0.5 + max_disparity * normalized_depth))",
+    "z_buffer": "larger normalized inverse-depth value wins",
+    "motion": "source_x - target_x in right-eye pixel coordinates; holes use zero",
+    "simple_fill": "nearest valid source pixel on each scanline"
+  },
+  "records": {
+    "blue_marble_predicted_depth": {
+      "input": "examples/assets/normalized/blue_marble.png",
+      "depth": "examples/assets/depth/distill_any_depth_small/blue_marble.r32f.bin",
+      "hole_fraction": 0.0519561767578125,
+      "valid_fraction": 0.9480438232421875,
+      "disparity_range": [
+        0.5,
+        16.5
+      ],
+      "simple_prefill_vs_warped": {
+        "mae": 0.03755085542798042,
+        "rmse": 0.10552620142698288,
+        "max_abs": 0.9046613574028015
+      },
+      "dlss5_vs_simple": {
+        "mae": 0.024892637506127357,
+        "rmse": 0.06301993876695633,
+        "max_abs": 0.718017578125
+      },
+      "dlss5_vs_simple_holes": {
+        "mae": 0.01932401955127716,
+        "rmse": 0.06091999635100365,
+        "max_abs": 0.6437909603118896
+      },
+      "dlss5_vs_simple_valid": {
+        "mae": 0.025197815150022507,
+        "rmse": 0.06313300877809525,
+        "max_abs": 0.718017578125
+      },
+      "output_range": [
+        0.0,
+        0.86328125
+      ],
+      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)"
+    },
+    "portrait_cc0_predicted_depth": {
+      "input": "examples/assets/normalized/portrait_cc0.png",
+      "depth": "examples/assets/depth/distill_any_depth_small/portrait_cc0.r32f.bin",
+      "hole_fraction": 0.107269287109375,
+      "valid_fraction": 0.892730712890625,
+      "disparity_range": [
+        0.5,
+        16.5
+      ],
+      "simple_prefill_vs_warped": {
+        "mae": 0.047227807343006134,
+        "rmse": 0.10299713164567947,
+        "max_abs": 0.8962693810462952
+      },
+      "dlss5_vs_simple": {
+        "mae": 0.010750062763690948,
+        "rmse": 0.02525017410516739,
+        "max_abs": 0.6376272439956665
+      },
+      "dlss5_vs_simple_holes": {
+        "mae": 0.01571056991815567,
+        "rmse": 0.04689449444413185,
+        "max_abs": 0.6376272439956665
+      },
+      "dlss5_vs_simple_valid": {
+        "mae": 0.010154015384614468,
+        "rmse": 0.021211810410022736,
+        "max_abs": 0.36648422479629517
+      },
+      "output_range": [
+        3.2067298889160156e-05,
+        0.78564453125
+      ],
+      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)"
+    },
+    "stone_texture_plane_oracle": {
+      "input": "examples/assets/normalized/stone_texture.png",
+      "ground_truth": "np.roll(left, -plane_shift) for a horizontally periodic planar texture",
+      "plane_shift": 16,
+      "hole_fraction": 0.0625,
+      "simple_error_all": {
+        "mae": 0.009507725946605206,
+        "rmse": 0.05651586875319481,
+        "max_abs": 0.9069409966468811
+      },
+      "simple_error_holes": {
+        "mae": 0.1521236151456833,
+        "rmse": 0.22606347501277924,
+        "max_abs": 0.9069409966468811
+      },
+      "dlss5_error_all": {
+        "mae": 0.050096362829208374,
+        "rmse": 0.08328106254339218,
+        "max_abs": 0.95062255859375
+      },
+      "dlss5_error_holes": {
+        "mae": 0.13796931505203247,
+        "rmse": 0.20850445330142975,
+        "max_abs": 0.95062255859375
+      },
+      "mask0_vs_mask255": {
+        "mae": 0.0,
+        "rmse": 0.0,
+        "max_abs": 0.0
+      },
+      "hole_mae_improvement": 0.014154300093650818,
+      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)",
+      "interpretation": "known planar translation proxy, not genuinely unseen disocclusion ground truth"
+    }
+  },
+  "limitations": [
+    "relative monocular depth is a disparity proxy, not metric stereo depth",
+    "native harness accepts constant --mask only; mask0/mask255 are compared and spatial HoleMask is not bound",
+    "unknown disoccluded background has no image-only ground truth; only the planar oracle has a known reference"
+  ]
+}

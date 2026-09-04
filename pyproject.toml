@@ -11,6 +11,12 @@ dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
 research = ["numpy>=1.26"]
+depth = [
+    "Pillow>=10",
+    "transformers>=4.45,<5",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.25",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -31,6 +31,12 @@ For the image experiment tools, install the optional NumPy dependency too:
 python -m pip install -e ".[research]"
 ```
 
+For Distill-Any-Depth small depth inference, add the depth extra:
+
+```powershell
+python -m pip install -e ".[research,depth]"
+```
+
 Run the portable checkpoint on an RGBA16F contract image:
 
 ```powershell
@@ -48,7 +54,8 @@ python tools\dlss5_pytorch.py --self-test
 
 The full model contract and the observed native behavior are documented in
 [`docs/DLSS5_USER_GUIDE.md`](docs/DLSS5_USER_GUIDE.md) and
-[`docs/DLSS5_EXPERIMENTS.md`](docs/DLSS5_EXPERIMENTS.md).
+[`docs/DLSS5_EXPERIMENTS.md`](docs/DLSS5_EXPERIMENTS.md). The stereo/inpainting
+experiment is documented in [`docs/DLSS5_STEREO_EXPERIMENTS.md`](docs/DLSS5_STEREO_EXPERIMENTS.md).
 
 ## Repository layout
 
@@ -75,7 +82,9 @@ examples/
   assets/input/            downloaded source images
   assets/normalized/       256x256 display inputs
   assets/conditions/       controlled depth proxy previews
+  assets/depth/            Distill-Any-Depth small relative depth outputs
   cases/native/            native output PNGs and JSON metrics
+  cases/stereo_inpainting/ stereo warp/fill/DLSS5 comparison PNGs and metrics
 docs/                      user guide, experiment report, and evidence notes
 third_party/               optional source repositories as git submodules
 DLSS5-extracted/           local NVIDIA-derived extraction; intentionally ignored
@@ -102,6 +111,14 @@ python tools\experiments\run_dlss5_image_cases.py `
   --harness C:\path\to\dlss5_eval.exe --width 256 --height 256
 ```
 
+Generate relative depth and run the stereo experiment:
+
+```powershell
+python tools\experiments\run_distill_any_depth_small.py --device cuda
+python tools\experiments\run_stereo_inpainting_cases.py `
+  --harness C:\path\to\dlss5_eval.exe --max-disparity 16 --plane-shift 16
+```
+
 The runner uses linear-light RGBA16F inputs, controlled R32F depth proxies,
 and RG16F motion vectors. Native binary contracts are written below
 `examples/.work/` and are ignored; reviewable PNGs and the relative-path
@@ -115,6 +132,8 @@ The next layers are intentionally not hidden behind the current model API:
   reversed-Z mapping;
 - add a documented temporal-state object and motion-vector reprojection tests;
 - validate ControlMask and inpainting-specific masks against native outputs;
+- validate the no-op ControlMask binding with launch/resource telemetry, then
+  repeat the stereo test with the actual HoleMask;
 - expand native-pair distillation beyond the current public fixtures;
 - recover the remaining private front producer before making any stronger
   native-equivalence claim.
