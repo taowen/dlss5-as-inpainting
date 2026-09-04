@@ -264,7 +264,10 @@ lane  = (word_index % 16) + 16 * ((word_index // 640) % 2)
 The validator is `tools/analyze_dlss5_tinlayout_probes.py`; its latest control
 run reports zero mismatches for both maps and 128 words per 40x40 CTA. This
 recovers the physical CTA/lane schedule without claiming that the four bytes
-inside each store are already in logical channel order.
+inside each store are already in logical channel order. A four-run RZ control,
+validated by `tools/analyze_dlss5_store_slot_probes.py`, further shows that the
+four pre downsample stores partition the 160 rows as `0,2,...78`,
+`1,3,...79`, `80,82,...158`, and `81,83,...159`, with 1,280 words per row.
 
 The same run logs every committed D3D12 buffer creation. The only tracked
 driver-owned arena remains GPU VA `0x1ba00000`, size `0xefbc00`, with UAV flags;
