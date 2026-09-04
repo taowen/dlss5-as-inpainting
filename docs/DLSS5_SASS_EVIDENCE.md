@@ -189,9 +189,10 @@ actual pre kernel. On the RTX 5080 and the same two-frame temporal contract,
 elements above `1e-3`; `FADD R48,R43,0.5 -> 0.0` changed it with MAE
 `0.0036740`, RMSE `0.0060694`, maximum absolute error `0.0400391`, and
 `157,511/262,144` changed elements. The tested `FADD R37/R38` points were
-inactive for this carrier. Across all nine mutations, the captured original
+inactive for this carrier. In the initial nine-case matrix, the captured original
 and Neural textures were byte-identical to baseline, so the visible delta is
-downstream of the current readback boundary.
+downstream of the two legacy readback slots. The full descriptor scan identifies
+the changed resources as root0[2] and root0[5]/root1[0].
 
 The optional `--capture-all-neural` mode then read every resolved descriptor
 around each Neural dispatch. It showed why the two legacy captures were
@@ -202,6 +203,21 @@ root0[2] with MAE `0.2145830` and root0[5]/root1[0] with MAE `0.1937808`.
 This is the first direct evidence that the mutated pre path reaches hidden
 Neural resources. The full scan is reproducible by adding
 `--capture-all-neural` to the command above.
+
+Component-level masks provide an additional lane constraint. With the same
+carrier and temporal sequence, masking each TEX to two components produced:
+
+| SASS PC | mask | final MAE | hidden MAE | interpretation |
+|---|---:|---:|---:|---|
+| `0x0620` | `0x3/0x5/0x6` | `0.227164/0.225732/0.229032` | `0.286784/0.279946/0.285785` | every two-component subset remains nonzero |
+| `0x15d0` | `0x3/0x5/0x6` | `0.180217/0.188974/0.177900` | `0.197118/0.209432/0.194973` | all three subsets remain active, with different weights |
+| `0x15e0` | `0x3/0x5/0x6` | `0.261709/0.261709/0.261709` | `0.382358/0.382358/0.382358` | any missing component collapses RGB to zero |
+
+The corresponding single-component masks (`0x1/0x2/0x4`) collapse the initial
+read and `0x15e0` to the same zero-RGB result; `0x15d0` remains visibly active
+but with a different hidden tensor for each component. This rules out a
+single-channel front texture and narrows the PyTorch lane recovery to the
+three-component outputs of these reads plus their exact coordinate mapping.
 
 The matrix is reproducible with:
 
