@@ -265,6 +265,46 @@ hashes. Capture outputs stay in the ignored `.native-build` tree because their
 addresses are process-specific; the parser and the add-on are the reproducible
 artifacts committed to the repository.
 
+## Exact pre-front producer snapshots
+
+The launch hook can now insert a fence-synchronized copy immediately after
+the native pre-block launch and, optionally, after its first `inpview` launch:
+
+```powershell
+python tools/probe_dlss5_front_mutations.py `
+  --runtime-template <runtime-template> --harness <dlss5_eval.exe> `
+  --addon <capture-addon> --baseline-only --dump-dark-structs `
+  --wrap-nvapi --capture-nvapi-launch --capture-driver-buffers `
+  --capture-after-pre --capture-after-inpview
+```
+
+For the 256x256 5080 control, the first pre snapshot proves these contiguous
+arena ranges:
+
+| producer/view | GPU VA | arena offset | bytes |
+|---|---:|---:|---:|
+| pre full-resolution output candidate | `0x1ba16c00` | `0x16c00` | `0x320000` |
+| pre downsample output / inpview input | `0x1bd36c00` | `0x336c00` | `0xc8000` |
+| inpview output | `0x1bdfec00` | `0x3fec00` | `0xc8000` |
+
+The first and second ranges are written by the pre CUBIN; the third range is
+written by `cc_tinlayout_fused_swin_1h_32_1_inpview_tilesync_fp8` after it
+consumes the second range. The captured full arena is 15,711,232 bytes. In
+the latest run the exact pre and inpview snapshots were respectively:
+
+```text
+after_pre     c0131e251dc2271b80b3580070f217aa39e478a5915f094a22e07abbc8bff311
+after_inpview 7a373645619763957801374d709bc16c5f19ce2a196df4c5ec21fcd93e0f4e30
+```
+
+The byte sizes factor as a 32-channel FP16 candidate for the first view and a
+32-channel E4M3/byte candidate for each 160x160 view. Those are size-factor
+identities, not permission to flatten the native `tinlayout` swizzle; the
+logical lane permutation still has to be decoded before feeding these bytes
+to an ordinary PyTorch tensor. This is now a captured exact producer output,
+with the remaining work narrowed to layout decoding and independent numeric
+reproduction.
+
 ## Bit-exact PyTorch-facing carrier
 
 Ordinary PyTorch layers remain a semantic translation and are explicitly not

@@ -556,6 +556,14 @@ def run_case(
             env["DLSS5_NVAPI_CAPTURE_LAUNCH"] = "1"
         else:
             env.pop("DLSS5_NVAPI_CAPTURE_LAUNCH", None)
+        if args.capture_after_pre:
+            env["DLSS5_NVAPI_CAPTURE_PRE_OUTPUT"] = "1"
+        else:
+            env.pop("DLSS5_NVAPI_CAPTURE_PRE_OUTPUT", None)
+        if args.capture_after_inpview:
+            env["DLSS5_NVAPI_CAPTURE_INPVIEWS"] = "1"
+        else:
+            env.pop("DLSS5_NVAPI_CAPTURE_INPVIEWS", None)
         old_env = os.environ.copy()
         os.environ.update(env)
         try:
@@ -712,6 +720,16 @@ def main() -> int:
         action="store_true",
         help="dump LaunchCuKernelChain descriptors and parameter payloads",
     )
+    parser.add_argument(
+        "--capture-after-pre",
+        action="store_true",
+        help="insert a readback immediately after the native pre-block CUBIN launch",
+    )
+    parser.add_argument(
+        "--capture-after-inpview",
+        action="store_true",
+        help="insert a readback after the first 32-channel inpview CUBIN launch",
+    )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
 
@@ -856,6 +874,8 @@ def main() -> int:
                 "dump_dark_deep": args.dump_dark_deep,
                 "wrap_nvapi": args.wrap_nvapi,
                 "capture_nvapi_launch": args.capture_nvapi_launch,
+                "capture_after_pre": args.capture_after_pre,
+                "capture_after_inpview": args.capture_after_inpview,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

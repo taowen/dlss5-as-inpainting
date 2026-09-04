@@ -1661,6 +1661,8 @@ NvApiGetCudaMergedTextureSamplerObjectFn g_nvapi_get_cuda_merged_texture_sampler
 NvApiGetCudaIndependentDescriptorObjectFn g_nvapi_get_cuda_independent_descriptor_object = nullptr;
 unsigned int g_nvapi_launch_dump_index = 0;
 unsigned int g_nvapi_descriptor_dump_index = 0;
+std::mutex g_nvapi_function_mutex;
+std::unordered_map<uint64_t, std::string> g_nvapi_function_names;
 
 void capture_nvapi_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE descriptor, const char *kind) {
     if (!env_enabled("DLSS5_NVAPI_CAPTURE_LAUNCH") || !descriptor.ptr) return;
@@ -1777,6 +1779,10 @@ NvApiStatus __stdcall hook_nvapi_create_cu_function(
     void *device, uint64_t module, const char *name, uint64_t *function) {
     const NvApiStatus status = g_nvapi_create_cu_function
         ? g_nvapi_create_cu_function(device, module, name, function) : 1;
+    if (status == 0 && function && *function && name) {
+        std::lock_guard<std::mutex> lock(g_nvapi_function_mutex);
+        g_nvapi_function_names[*function] = name;
+    }
     log([&] {
         std::ostringstream s;
         s << "nvapi_create_cu_function device=0x" << std::hex << reinterpret_cast<uintptr_t>(device)
@@ -1792,6 +1798,29 @@ NvApiStatus __stdcall hook_nvapi_launch_cu_kernel_chain(
     dump_nvapi_launch_payload(command_list, kernels, count);
     const NvApiStatus status = g_nvapi_launch_cu_kernel_chain
         ? g_nvapi_launch_cu_kernel_chain(command_list, kernels, count) : 1;
+    if (status == 0 && env_enabled("DLSS5_NVAPI_CAPTURE_PRE_OUTPUT") && kernels && count > 0) {
+        NvApiCuKernelLaunchParams first{};
+        SIZE_T copied = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), kernels, &first, sizeof(first), &copied) &&
+            copied == sizeof(first)) {
+            std::string name;
+            {
+                std::lock_guard<std::mutex> lock(g_nvapi_function_mutex);
+                const auto found = g_nvapi_function_names.find(first.function);
+                if (found != g_nvapi_function_names.end()) name = found->second;
+            }
+            const bool capture_pre =
+                env_enabled("DLSS5_NVAPI_CAPTURE_PRE_OUTPUT") &&
+                name == "cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8";
+            const bool capture_inpview =
+                env_enabled("DLSS5_NVAPI_CAPTURE_INPVIEWS") &&
+                name == "cc_tinlayout_fused_swin_1h_32_1_inpview_tilesync_fp8";
+            if (capture_pre || capture_inpview)
+                capture_d3d12_driver_buffers(
+                    reinterpret_cast<ID3D12GraphicsCommandList *>(command_list),
+                    capture_pre ? "after_pre" : "after_inpview");
+        }
+    }
     log([&] {
         std::ostringstream s;
         s << "nvapi_launch_chain_return status=" << std::dec << status;
