@@ -75,5 +75,28 @@ block produced identical mask=0 and mask=255 outputs in this harness. That
 means the field was not propagated through this ordinary-DLSS hook setup; it is
 not evidence that the native Feature 18 implementation lacks ControlMask.
 
+## Full-precision temporal A/B
+
+The same independent harness was then driven with its raw `RGBA16F` protocol.
+The first frame was a deterministic linear test image, followed by a checker
+pattern. The final checker output was compared with an isolated checker run
+whose first frame was reset. The temporal-history effect was:
+
+- mean absolute difference: `0.026169`
+- RMSE: `0.061115`
+- changed values above `1e-3`: `160,773 / 524,288`
+
+Repeating that two-frame experiment with a constant `(+4, 0)` pixel motion
+vector on the second frame instead of zero motion produced a distinct output:
+
+- mean absolute difference versus zero-MV: `0.008876`
+- RMSE: `0.024945`
+- changed values above `1e-3`: `138,016 / 524,288`
+
+Both results are before RGBA8 quantisation and the alpha channel remained 1.0.
+They are stronger dynamic evidence than the worker's byte-level result: the
+native path's temporal state and motion-vector inputs affect the full-precision
+neural output, not only the presentation conversion.
+
 The temporary build, SDK headers, and locally staged runtime are outside this
 repository. NVIDIA runtime files and third-party binaries are not committed.
