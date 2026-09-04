@@ -788,6 +788,12 @@ void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT
           << " root0=" << root0_resources << " root1=" << root1_resources;
         return s.str();
     });
+    if (neural_pipeline && env_enabled("DLSS5_D3D12_CAPTURE_BEFORE_NEURAL")) {
+        capture_d3d12_texture(
+            list,
+            resolve_d3d12_gpu_descriptor(root0, 2),
+            "before_neural_root0_descriptor2");
+    }
     if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
     if (neural_pipeline || env_enabled("DLSS5_D3D12_CAPTURE_ALL_DISPATCHES")) {
         if (env_enabled("DLSS5_D3D12_CAPTURE_ALL_NEURAL")) {

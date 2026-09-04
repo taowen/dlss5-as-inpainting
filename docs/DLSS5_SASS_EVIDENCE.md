@@ -211,6 +211,13 @@ Neural `root0[2]` changes first, followed by the final-output aliases
 log, so a trailing Original dispatch emitted during `WRITE` cannot be mistaken
 for the latest Neural tensor.
 
+With `--capture-before-neural`, the same latest `root0[2]` was read immediately
+before the Neural dispatch. The `FADD R5` mutation changed that pre-dispatch
+resource with exactly the same MAE `0.0029757`, RMSE `0.0043712`, and 158,951
+changed elements observed after the dispatch. This proves that the mutation is
+already present at the private CUBIN/driver boundary; the D3D12 Neural shader
+does not create the first difference.
+
 Component-level masks provide an additional lane constraint. With the same
 carrier and temporal sequence, masking each TEX to two components produced:
 

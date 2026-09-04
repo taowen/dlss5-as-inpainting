@@ -294,7 +294,7 @@ def copy_runtime(template: Path, destination: Path, harness: Path, addon: Path, 
 
 def capture_pair(
     runtime: Path, width: int, height: int, capture_all: bool
-) -> tuple[Path, Path, list[Path], list[str], Path | None, Path | None]:
+) -> tuple[Path, Path, list[Path], list[str], Path | None, Path | None, Path | None]:
     groups: dict[str, list[tuple[int, Path]]] = {}
     for path in runtime.glob("dlss5_d3d12_capture_*.rgba16f.bin"):
         match = CAPTURE_RE.fullmatch(path.name)
@@ -321,6 +321,14 @@ def capture_pair(
     capture_layout = [layout_by_index.get(index, "legacy_capture") for index, _ in captures]
     hidden_neural = None
     final_texture = None
+    before_neural = None
+    before_candidates = [
+        (index, path)
+        for index, path in captures
+        if layout_by_index.get(index) == "neural:before_neural_root0_descriptor2"
+    ]
+    if before_candidates:
+        before_neural = max(before_candidates, key=lambda item: item[0])[1]
     if capture_all:
         # Group by the actual dispatch labels from the add-on log. The carrier
         # can issue a trailing Original dispatch while writing the harness
@@ -358,7 +366,7 @@ def capture_pair(
     read_rgba16f(neural, width, height)
     for path in all_paths:
         read_rgba16f(path, width, height)
-    return original, neural, all_paths, capture_layout, hidden_neural, final_texture
+    return original, neural, all_paths, capture_layout, hidden_neural, final_texture, before_neural
 
 
 def run_case(
@@ -474,6 +482,10 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_ALL_DISPATCHES"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_ALL_DISPATCHES", None)
+        if args.capture_before_neural:
+            env["DLSS5_D3D12_CAPTURE_BEFORE_NEURAL"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_BEFORE_NEURAL", None)
         env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
         for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
@@ -501,6 +513,7 @@ def run_case(
             capture_layout,
             hidden_neural,
             final_texture,
+            before_neural,
         ) = capture_pair(
             runtime, args.width, args.height, args.capture_all_neural
         )
@@ -514,6 +527,7 @@ def run_case(
                 "capture_layout": capture_layout,
                 "hidden_neural_capture": str(hidden_neural) if hidden_neural else None,
                 "final_texture_capture": str(final_texture) if final_texture else None,
+                "before_neural_capture": str(before_neural) if before_neural else None,
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
                 "original_summary": summary(read_rgba16f(original_path, args.width, args.height)),
                 "neural_summary": summary(read_rgba16f(neural_path, args.width, args.height)),
@@ -551,6 +565,11 @@ def main() -> int:
         "--capture-all-dispatches",
         action="store_true",
         help="capture the same descriptor set after Original and Neural dispatches",
+    )
+    parser.add_argument(
+        "--capture-before-neural",
+        action="store_true",
+        help="capture root0[2] immediately before each Neural dispatch",
     )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
@@ -597,6 +616,10 @@ def main() -> int:
             read_rgba16f(Path(baseline["final_texture_capture"]), args.width, args.height)
             if baseline["final_texture_capture"] else None
         )
+        baseline_before_neural = (
+            read_rgba16f(Path(baseline["before_neural_capture"]), args.width, args.height)
+            if baseline["before_neural_capture"] else None
+        )
         for report in reports:
             if report["status"] != "ok":
                 continue
@@ -628,6 +651,11 @@ def main() -> int:
                     read_rgba16f(Path(report["final_texture_capture"]), args.width, args.height),
                     baseline_final_texture,
                 )
+            if baseline_before_neural is not None and report["before_neural_capture"]:
+                report["diff_vs_baseline"]["before_neural_capture"] = difference(
+                    read_rgba16f(Path(report["before_neural_capture"]), args.width, args.height),
+                    baseline_before_neural,
+                )
 
     output = run_root / "report.json"
     output.write_text(
@@ -639,6 +667,7 @@ def main() -> int:
                 "sequence": [args.input, "checker" if args.input == "color" else "color"],
                 "capture_all_neural": args.capture_all_neural,
                 "capture_all_dispatches": args.capture_all_dispatches,
+                "capture_before_neural": args.capture_before_neural,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),
