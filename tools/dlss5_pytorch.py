@@ -1450,8 +1450,21 @@ class DLSS5Graph(nn.Module):
         rgb: Optional[Tensor] = None,
         pre_features: Optional[Tensor] = None,
         pre_front_features: Optional[Tensor] = None,
+        pre_front_generated_lanes: Optional[Tensor] = None,
+        pre_front_texture_lanes: Optional[Tensor] = None,
+        pre_front_constant: Optional[Tensor] = None,
         return_features: bool = False,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        if pre_front_generated_lanes is not None or pre_front_texture_lanes is not None:
+            if pre_front_features is not None:
+                raise ValueError("packed and component pre-front inputs are mutually exclusive")
+            if pre_front_generated_lanes is None or pre_front_texture_lanes is None:
+                raise ValueError("generated and texture pre-front lane tensors are both required")
+            pre_front_features = assemble_pre_front_feature_lanes(
+                pre_front_generated_lanes,
+                pre_front_texture_lanes,
+                pre_front_constant,
+            )
         assembled, base_color = self._assemble_input(color, history, motion, rgb)
         neural, features = self._run(
             assembled,
@@ -2277,9 +2290,18 @@ def _self_test() -> None:
     with torch.no_grad():
         y = model(color, history, motion)
         z = model(color, history, motion, mask)
+        component_front = model(
+            color,
+            history,
+            motion,
+            pre_front_generated_lanes=torch.zeros(1, 3, 2, 64, 64).half(),
+            pre_front_texture_lanes=torch.zeros(1, 4, 2, 64, 64).half(),
+        )
     assert y.shape == color.shape == z.shape
+    assert component_front.shape == color.shape
     assert torch.isfinite(y.float()).all()
     assert torch.isfinite(z.float()).all()
+    assert torch.isfinite(component_front.float()).all()
     print("DLSS5Graph smoke test passed", tuple(y.shape))
 
 
