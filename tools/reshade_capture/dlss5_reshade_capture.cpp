@@ -198,11 +198,6 @@ void dump_cuda_image(const char *api, const void *image) {
     if (out) out.write(static_cast<const char *>(image), static_cast<std::streamsize>(size));
 }
 
-void dump_dark_pointer(const char *api, uintptr_t value) {
-    if (value < 0x10000) return;
-    dump_cuda_image(api, reinterpret_cast<const void *>(value));
-}
-
 void dump_dark_memory(const char *api, uintptr_t value) {
     if (value < 0x10000) return;
     uint8_t bytes[128]{};
@@ -213,15 +208,6 @@ void dump_dark_memory(const char *api, uintptr_t value) {
         std::ostringstream s;
         s << api << " ptr=0x" << std::hex << value << " bytes=" << std::dec << copied
           << " data=" << hex_bytes(bytes, copied);
-        return s.str();
-    });
-}
-
-void report_dark_table_call(const void *table, size_t index) {
-    log([&] {
-        std::ostringstream s;
-        s << "dark_table_call table=0x" << std::hex << reinterpret_cast<uintptr_t>(table)
-          << " index=" << std::dec << index;
         return s.str();
     });
 }
