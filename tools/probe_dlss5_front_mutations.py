@@ -276,7 +276,8 @@ def copy_runtime(template: Path, destination: Path, harness: Path, addon: Path, 
     if destination.exists():
         raise RuntimeError(f"refusing to overwrite existing case runtime: {destination}")
     patterns = (
-        "*.rgba16f.bin", "*.r32f.bin", "*.rg16f.bin", "*.log", "*.cubin", "*.dxil"
+        "*.rgba16f.bin", "*.r32f.bin", "*.rg16f.bin", "dlss5_d3d12_driver_buffer_*.bin",
+        "*.log", "*.cubin", "*.dxil"
     )
 
     def ignore_runtime_artifacts(_path: str, names: list[str]) -> list[str]:
@@ -486,6 +487,14 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_BEFORE_NEURAL"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_BEFORE_NEURAL", None)
+        if args.capture_driver_buffers or args.capture_driver_buffers_all:
+            env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS", None)
+        if args.capture_driver_buffers_all:
+            env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL", None)
         env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
         for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
@@ -517,6 +526,7 @@ def run_case(
         ) = capture_pair(
             runtime, args.width, args.height, args.capture_all_neural
         )
+        driver_buffers = sorted(runtime.glob("dlss5_d3d12_driver_buffer_*.bin"))
         result.update(
             {
                 "status": "ok",
@@ -528,6 +538,7 @@ def run_case(
                 "hidden_neural_capture": str(hidden_neural) if hidden_neural else None,
                 "final_texture_capture": str(final_texture) if final_texture else None,
                 "before_neural_capture": str(before_neural) if before_neural else None,
+                "driver_buffers": [str(path) for path in driver_buffers],
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
                 "original_summary": summary(read_rgba16f(original_path, args.width, args.height)),
                 "neural_summary": summary(read_rgba16f(neural_path, args.width, args.height)),
@@ -570,6 +581,16 @@ def main() -> int:
         "--capture-before-neural",
         action="store_true",
         help="capture root0[2] immediately before each Neural dispatch",
+    )
+    parser.add_argument(
+        "--capture-driver-buffers",
+        action="store_true",
+        help="capture the driver-owned 15.7 MB UAV seen during resource creation",
+    )
+    parser.add_argument(
+        "--capture-driver-buffers-all",
+        action="store_true",
+        help="capture every driver-owned UAV between 1 MiB and 64 MiB",
     )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
@@ -668,6 +689,8 @@ def main() -> int:
                 "capture_all_neural": args.capture_all_neural,
                 "capture_all_dispatches": args.capture_all_dispatches,
                 "capture_before_neural": args.capture_before_neural,
+                "capture_driver_buffers": args.capture_driver_buffers,
+                "capture_driver_buffers_all": args.capture_driver_buffers_all,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

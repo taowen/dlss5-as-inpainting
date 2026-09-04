@@ -118,6 +118,15 @@ struct D3D12PendingTextureCapture {
 };
 std::vector<D3D12PendingTextureCapture> g_d3d12_pending_captures;
 
+struct D3D12PendingBufferCapture {
+    ID3D12Resource *source = nullptr;
+    ID3D12Resource *readback = nullptr;
+    UINT64 bytes = 0;
+    unsigned int index = 0;
+};
+std::vector<D3D12PendingBufferCapture> g_d3d12_pending_buffer_captures;
+std::vector<ID3D12Resource *> g_d3d12_driver_buffer_candidates;
+
 template <typename F>
 void log(F &&make_line);
 bool write_runtime_binary(const std::string &file_name, const void *data, size_t bytes);
@@ -324,8 +333,94 @@ bool capture_d3d12_texture(ID3D12GraphicsCommandList *list,
     return true;
 }
 
+void remember_d3d12_driver_buffer(ID3D12Resource *resource) {
+    if (!resource) return;
+    const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    const bool capture_all = env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL");
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+        (!capture_all && desc.Width != 15711232) ||
+        (capture_all && (desc.Width < 0x100000 || desc.Width > 0x4000000))) return;
+    bool added = false;
+    {
+        std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+        if (std::find(g_d3d12_driver_buffer_candidates.begin(),
+                      g_d3d12_driver_buffer_candidates.end(), resource) ==
+            g_d3d12_driver_buffer_candidates.end()) {
+            resource->AddRef();
+            g_d3d12_driver_buffer_candidates.push_back(resource);
+            added = true;
+        }
+    }
+    if (added) log([&] {
+        std::ostringstream s;
+        s << "d3d12_driver_buffer_candidate resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource) << " gpu_va=0x"
+          << resource->GetGPUVirtualAddress() << " bytes=" << std::dec << desc.Width;
+        return s.str();
+    });
+}
+
+bool capture_d3d12_driver_buffers(ID3D12GraphicsCommandList *list) {
+    if (!env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS")) return false;
+    std::vector<ID3D12Resource *> candidates;
+    {
+        std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+        candidates = g_d3d12_driver_buffer_candidates;
+    }
+    bool captured = false;
+    for (ID3D12Resource *source : candidates) {
+        if (!list || !source || !prepare_d3d12_capture_fence()) continue;
+        const D3D12_RESOURCE_DESC source_desc = source->GetDesc();
+        const bool capture_all = env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL");
+        if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+            (!capture_all && source_desc.Width != 15711232) ||
+            (capture_all && (source_desc.Width < 0x100000 || source_desc.Width > 0x4000000))) continue;
+
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC buffer{};
+        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        buffer.Width = source_desc.Width;
+        buffer.Height = 1;
+        buffer.DepthOrArraySize = 1;
+        buffer.MipLevels = 1;
+        buffer.SampleDesc.Count = 1;
+        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ID3D12Resource *readback = nullptr;
+        if (FAILED(g_d3d12_capture_device->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr, IID_PPV_ARGS(&readback)))) continue;
+
+        D3D12_RESOURCE_BARRIER to_copy{};
+        to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_copy.Transition.pResource = source;
+        to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &to_copy);
+        list->CopyBufferRegion(readback, 0, source, 0, source_desc.Width);
+        std::swap(to_copy.Transition.StateBefore, to_copy.Transition.StateAfter);
+        list->ResourceBarrier(1, &to_copy);
+
+        source->AddRef();
+        g_d3d12_pending_buffer_captures.push_back({
+            source, readback, source_desc.Width, g_d3d12_capture_index++});
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_buffer_capture_scheduled resource=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(source) << " gpu_va=0x"
+              << source->GetGPUVirtualAddress() << " bytes=" << std::dec
+              << source_desc.Width << " index=" << g_d3d12_pending_buffer_captures.back().index;
+            return s.str();
+        });
+        captured = true;
+    }
+    return captured;
+}
+
 void flush_d3d12_texture_captures(ID3D12CommandQueue *queue) {
-    if (!queue || g_d3d12_pending_captures.empty() || !prepare_d3d12_capture_fence()) return;
+    if (!queue || (g_d3d12_pending_captures.empty() && g_d3d12_pending_buffer_captures.empty()) ||
+        !prepare_d3d12_capture_fence()) return;
     const UINT64 fence_value = ++g_d3d12_capture_fence_value;
     if (FAILED(queue->Signal(g_d3d12_capture_fence, fence_value))) return;
     if (g_d3d12_capture_fence->GetCompletedValue() < fence_value) {
@@ -356,11 +451,35 @@ void flush_d3d12_texture_captures(ID3D12CommandQueue *queue) {
             return s.str();
         });
     }
+    for (D3D12PendingBufferCapture &pending : g_d3d12_pending_buffer_captures) {
+        void *mapped = nullptr;
+        D3D12_RANGE range{0, static_cast<SIZE_T>(pending.bytes)};
+        if (FAILED(pending.readback->Map(0, &range, &mapped)) || !mapped) continue;
+        std::vector<uint8_t> bytes(static_cast<size_t>(pending.bytes));
+        std::memcpy(bytes.data(), mapped, bytes.size());
+        pending.readback->Unmap(0, nullptr);
+        std::ostringstream name;
+        name << "dlss5_d3d12_driver_buffer_" << GetCurrentProcessId() << '_'
+             << pending.index << ".bin";
+        const bool written = write_runtime_binary(name.str(), bytes.data(), bytes.size());
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_buffer_capture_written resource=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(pending.source) << " bytes=" << std::dec
+              << bytes.size() << " written=" << written << " file=" << name.str();
+            return s.str();
+        });
+    }
     for (D3D12PendingTextureCapture &pending : g_d3d12_pending_captures) {
         pending.source->Release();
         pending.readback->Release();
     }
     g_d3d12_pending_captures.clear();
+    for (D3D12PendingBufferCapture &pending : g_d3d12_pending_buffer_captures) {
+        pending.source->Release();
+        pending.readback->Release();
+    }
+    g_d3d12_pending_buffer_captures.clear();
 }
 
 void shutdown_d3d12_texture_captures() {
@@ -369,6 +488,14 @@ void shutdown_d3d12_texture_captures() {
         pending.readback->Release();
     }
     g_d3d12_pending_captures.clear();
+    for (D3D12PendingBufferCapture &pending : g_d3d12_pending_buffer_captures) {
+        pending.source->Release();
+        pending.readback->Release();
+    }
+    g_d3d12_pending_buffer_captures.clear();
+    for (ID3D12Resource *resource : g_d3d12_driver_buffer_candidates)
+        resource->Release();
+    g_d3d12_driver_buffer_candidates.clear();
     if (g_d3d12_capture_event) {
         CloseHandle(g_d3d12_capture_event);
         g_d3d12_capture_event = nullptr;
@@ -606,6 +733,30 @@ void dump_dark_struct(size_t slot, const char *phase, const char *kind,
     });
 }
 
+void dump_dark_struct_children(size_t slot, const char *phase, const char *kind,
+                               size_t ordinal, uintptr_t value) {
+    if (!env_enabled("DLSS5_DARK_DUMP_DEEP") || (slot != 13 && slot != 14)) return;
+    if (value < 0x10000) return;
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(reinterpret_cast<const void *>(value), &region, sizeof(region)) != sizeof(region) ||
+        region.State != MEM_COMMIT || region.Protect == PAGE_NOACCESS ||
+        region.Protect == PAGE_GUARD) return;
+    const uintptr_t region_end = reinterpret_cast<uintptr_t>(region.BaseAddress) + region.RegionSize;
+    if (value >= region_end) return;
+    const size_t bytes = static_cast<size_t>(std::min<uintptr_t>(0x1000, region_end - value));
+    std::vector<uint8_t> data(bytes);
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(value),
+                           data.data(), data.size(), &copied) || copied < 16) return;
+    for (size_t offset = 0; offset + sizeof(uintptr_t) <= copied; offset += sizeof(uintptr_t)) {
+        uintptr_t child = 0;
+        std::memcpy(&child, data.data() + offset, sizeof(child));
+        if (child == value || child < 0x10000) continue;
+        const size_t child_ordinal = (ordinal << 12) ^ offset;
+        dump_dark_struct(slot, phase, "deep", child_ordinal, child);
+    }
+}
+
 void dump_dark_binary(const char *api, uintptr_t value) {
     if (value < 0x10000) return;
 
@@ -793,6 +944,7 @@ void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT
             list,
             resolve_d3d12_gpu_descriptor(root0, 2),
             "before_neural_root0_descriptor2");
+        capture_d3d12_driver_buffers(list);
     }
     if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
     if (neural_pipeline || env_enabled("DLSS5_D3D12_CAPTURE_ALL_DISPATCHES")) {
@@ -976,6 +1128,7 @@ void STDMETHODCALLTYPE hook_d3d12_create_unordered_access_view(
     ID3D12Device *device, ID3D12Resource *resource, ID3D12Resource *counter,
     const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
     remember_d3d12_cpu_descriptor(handle, resource);
+    remember_d3d12_driver_buffer(resource);
     log([&] {
         std::ostringstream s;
         s << "d3d12_create_uav resource=0x" << std::hex << reinterpret_cast<uintptr_t>(resource)
@@ -1399,10 +1552,14 @@ void dump_dark_records() {
             for (size_t i = 0; i < 4; ++i) {
                 dump_dark_struct(entry->index, "first", "reg", i, entry->register_args[i]);
                 dump_dark_struct(entry->index, "latest", "reg", i, entry->last_register_args[i]);
+                dump_dark_struct_children(entry->index, "first", "reg", i, entry->register_args[i]);
+                dump_dark_struct_children(entry->index, "latest", "reg", i, entry->last_register_args[i]);
             }
             for (size_t i = 0; i < 4; ++i) {
                 dump_dark_struct(entry->index, "first", "stack", i, entry->stack_args[i]);
                 dump_dark_struct(entry->index, "latest", "stack", i, entry->last_stack_args[i]);
+                dump_dark_struct_children(entry->index, "first", "stack", i, entry->stack_args[i]);
+                dump_dark_struct_children(entry->index, "latest", "stack", i, entry->last_stack_args[i]);
             }
         }
     }

@@ -218,6 +218,15 @@ changed elements observed after the dispatch. This proves that the mutation is
 already present at the private CUBIN/driver boundary; the D3D12 Neural shader
 does not create the first difference.
 
+The optional `--capture-driver-buffers` mode also captures the driver-owned UAV
+at GPU VA `0x1ba00000` (`0xefbc00` bytes). The first two temporal snapshots are
+byte-identical between baseline and mutation; the third changes in 9,278,345
+bytes beginning at `0x16c0c`. A private slot14 mapping snapshot independently
+reports suballocation offset `0x16c00`, the same GPU VA, and the same size.
+This is the first raw workspace capture associated with the private CUBIN
+submission. Its internal tensor layout is still to be decoded before it can be
+used as a PyTorch input or exact intermediate.
+
 Component-level masks provide an additional lane constraint. With the same
 carrier and temporal sequence, masking each TEX to two components produced:
 
