@@ -115,6 +115,33 @@ temporal_net = DLSS5Graph(color_channels=4, history_channels=4, motion_channels=
 out = temporal_net(color, history=previous_output, motion=motion, control_mask=mask)
 ```
 
+## Bit-exact boundary
+
+`DLSS5Graph` is still the readable PyTorch translation and remains useful for
+studying the recovered 71-block graph, but it is not a bit-exact replacement.
+The RTX 5080 evidence now includes the complete private launch chain:
+`CreateCuModule`, `CreateCuFunction`, `LaunchCuKernelChain`, exact kernel
+parameters, CUDA descriptor-object handles, and the 147 MiB model UAV. The
+native CUBIN is therefore the only implementation currently justified as bit
+exact.
+
+For a PyTorch-facing inference call that preserves that guarantee, use the
+inference-only native carrier:
+
+```python
+from tools.dlss5_bit_exact import DLSS5BitExactCarrier
+
+with DLSS5BitExactCarrier(
+    r"<prepared-runtime>\dlss5_eval.exe", width=256, height=256
+) as model:
+    rgba16 = model(rgb_fp16_nchw)  # [1, 4, 256, 256], torch.float16
+```
+
+It keeps one native feature session alive so temporal history is preserved.
+`tools/verify_dlss5_bit_exact.py` compares its raw RGBA16F result against an
+independent native process; the local 5080 control is byte-equal at SHA-256
+`1fe38ab7fe6b85b8352fd11a48b15b32c2713029785baa7ee9a9ba934f38f1e3`.
+
 ## 权重边界
 
 `WEIGHTS_HT.bin` 的外层记录可以严格解析，主体字节流由 cubin 的 signed E4M3 解码路径确认。外层的两字节元素只是容器；FP8 权重按字节存放，部分尾部/头部是 FP16 参数。

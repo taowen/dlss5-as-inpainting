@@ -197,9 +197,97 @@ native 256x256 run recorded the complete high-frequency sequence:
 | 52 | 532 | `nvwgf2umx+0x1d8fba` | paired metadata call |
 | 53 | 1064 | `nvwgf2umx+0x1d8dc2` and `+0x1d8eab` | two descriptor/resource calls per slot-44 item |
 
-This is a stronger dynamic record of the private resource boundary, but it is
-not yet a kernel-launch ABI: ordinary `cuLaunch*`, graphics-interop, memcpy,
-and NVAPI execution hooks remain silent for this carrier. The ring therefore
-narrowed the remaining work without changing the bit-exact status: the model
-weights are exact, while the pre-front producer and driver-side launch/cbuffer
-binding are still unresolved.
+This was the first dynamic record of the private resource boundary. A later
+NVAPI wrapper resolved the remaining launch boundary: the carrier calls
+`NvAPI_D3D12_LaunchCuKernelChain` directly, rather than ordinary
+`cuLaunchKernel`. The older ring remains useful because it independently shows
+the driver-side resource traffic, while the NVAPI record supplies the exact
+function handle, grid/block geometry, parameter pointer, and parameter bytes.
+
+## NVAPI CUBIN launch chain
+
+The optional NVAPI wrapper is enabled with:
+
+```powershell
+$env:DLSS5_NVAPI_WRAP_RESULTS = "1"
+$env:DLSS5_NVAPI_CAPTURE_LAUNCH = "1"
+```
+
+The wrapper identifies these private-interface IDs from the installed NVAPI
+interface table:
+
+| ID | observed operation |
+|---:|---|
+| `0xad1a677d` | `NvAPI_D3D12_CreateCuModule` |
+| `0xe2436e22` | `NvAPI_D3D12_CreateCuFunction` |
+| `0x24973538` | `NvAPI_D3D12_LaunchCuKernelChain` |
+| `0x329fe6e0` | `NvAPI_D3D12_GetCudaMergedTextureSamplerObject` |
+| `0x0ddac234` | `NvAPI_D3D12_GetCudaIndependentDescriptorObject` |
+
+On the RTX 5080 256x256 carrier, the wrapper recorded 176 named CUDA
+functions and 532 single-kernel launch-chain calls. The three temporal passes
+each begin with:
+
+```text
+cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8  grid=40,40,1 block=32,1,1 param_size=264
+cc_tinlayout_fused_swin_1h_32_1_inpview_tilesync_fp8 grid=20,20,1 block=32,1,1 param_size=96
+...
+cc_tinlayout_fused_post_block_swin_1h_32_fp8     grid=41,41,1 block=32,1,1 param_size=184
+cg2r_copy_kernel                                grid=16,16,1 block=16,16,1 param_size=72
+```
+
+The exact first pre-block payload contains the live bindings and constants:
+
+```text
+offset 0xd0: 0x00000100, 0x00000100, GPU VA 0x1ba16c00
+offset 0xe0: GPU VA 0x009e00000                         # 147 MiB model UAV
+offset 0xf0: 0x00000140, 0x00000140, GPU VA 0x1bd36c00
+offset 0x100: 0x000000a0, 0x000000a0
+```
+
+The first eight bytes are also the exact CUDA object handles used by the
+pre-front texture path (`0x80200009801` in the 256x256 control). The wrapper
+maps those handles back to the D3D12 CPU descriptors and records the resource
+dimensions and raw 32-byte descriptor payloads. The later temporal pass adds
+the handles `0x80000009805` and `0x80200009806` for the temporal resources.
+
+The capture can be joined into a replay manifest without interpreting or
+rounding any parameter data:
+
+```powershell
+python tools/analyze_dlss5_nvapi_launch.py `
+  --runtime <capture-runtime>
+```
+
+The manifest retains the exact parameter bytes, SHA-256, little-endian words,
+function names, launch geometry, descriptor-object handles, and raw descriptor
+hashes. Capture outputs stay in the ignored `.native-build` tree because their
+addresses are process-specific; the parser and the add-on are the reproducible
+artifacts committed to the repository.
+
+## Bit-exact PyTorch-facing carrier
+
+Ordinary PyTorch layers remain a semantic translation and are explicitly not
+bit exact. The repository now also exposes the native CUBIN carrier through an
+inference-only `torch.nn.Module`. This is the honest way to provide a PyTorch
+call boundary while preserving the proprietary SM120 FP8/QMMA/SASS execution:
+
+```powershell
+python tools/verify_dlss5_bit_exact.py --runtime <prepared-runtime>
+```
+
+The verifier runs an independent native two-frame golden process and a second
+process through `DLSS5BitExactCarrier`, then compares the raw RGBA16F bytes.
+The local RTX 5080 result is:
+
+```text
+bytes       524288
+native SHA  1fe38ab7fe6b85b8352fd11a48b15b32c2713029785baa7ee9a9ba934f38f1e3
+carrier SHA 1fe38ab7fe6b85b8352fd11a48b15b32c2713029785baa7ee9a9ba934f38f1e3
+byte_equal  true
+```
+
+This proves bit equality for the pinned native carrier and input contract. It
+does not claim that `tools/dlss5_pytorch.py` has become a portable translation
+of every proprietary instruction; replacing the native CUBIN with ordinary
+PyTorch arithmetic would require a separate numerical-equivalence proof.

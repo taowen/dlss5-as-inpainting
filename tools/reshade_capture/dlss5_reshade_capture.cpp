@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <fstream>
 #include <iomanip>
@@ -103,6 +104,15 @@ CuGraphicsResourceSetMapFlagsFn g_cu_graphics_resource_set_map_flags = nullptr;
 CuGraphicsUnregisterResourceFn g_cu_graphics_unregister_resource = nullptr;
 CuGetExportTableFn g_cu_get_export_table = nullptr;
 unsigned int g_cuda_module_index = 0;
+
+void install_ngx_cuda_vtable_hooks();
+
+struct NvApiWrapper {
+    unsigned int id = 0;
+    void *original = nullptr;
+    void *replacement = nullptr;
+};
+std::vector<NvApiWrapper> g_nvapi_wrappers;
 
 using D3D12DispatchFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, UINT, UINT);
 using D3D12SetPipelineStateFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12PipelineState *);
@@ -206,6 +216,10 @@ void log(F &&make_line);
 bool write_runtime_binary(const std::string &file_name, const void *data, size_t bytes);
 
 void remember_d3d12_cpu_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource *resource) {
+    // D3D12 permits Create*View(resource=nullptr, ...), commonly when the
+    // descriptor is being initialized from an existing descriptor. Do not
+    // erase the resource association learned from the preceding copy.
+    if (!resource) return;
     std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
     for (D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
         if (!heap.cpu_start.ptr || !heap.increment || handle.ptr < heap.cpu_start.ptr) continue;
@@ -277,6 +291,19 @@ ID3D12Resource *resolve_d3d12_gpu_descriptor(D3D12_GPU_DESCRIPTOR_HANDLE handle,
         const size_t first = delta / heap.increment + offset;
         if (first >= heap.desc.NumDescriptors) continue;
         const auto found = heap.resources.find(first);
+        return found == heap.resources.end() ? nullptr : found->second;
+    }
+    return nullptr;
+}
+
+ID3D12Resource *resolve_d3d12_cpu_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+    for (const D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
+        if (!heap.cpu_start.ptr || !heap.increment || handle.ptr < heap.cpu_start.ptr) continue;
+        const size_t delta = static_cast<size_t>(handle.ptr - heap.cpu_start.ptr);
+        if (delta % heap.increment != 0 || delta / heap.increment >= heap.desc.NumDescriptors)
+            continue;
+        const auto found = heap.resources.find(delta / heap.increment);
         return found == heap.resources.end() ? nullptr : found->second;
     }
     return nullptr;
@@ -1580,6 +1607,335 @@ void *make_dark_thunk(void *original, DarkCallRecord *record) {
     return memory;
 }
 
+struct NvApiDim3 {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t z = 0;
+};
+struct NvApiCuKernelLaunchParams {
+    uint64_t function = 0;
+    NvApiDim3 grid{};
+    NvApiDim3 block{};
+    uint32_t dynamic_shared_bytes = 0;
+    const void *params = nullptr;
+    uint32_t param_size = 0;
+};
+static_assert(sizeof(NvApiCuKernelLaunchParams) == 56, "unexpected NVAPI launch layout");
+struct NvApiGetCudaMergedTextureSamplerObjectParams {
+    size_t struct_size_in = 0;
+    size_t struct_size_out = 0;
+    ID3D12Device *device = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE texture_descriptor{};
+    D3D12_CPU_DESCRIPTOR_HANDLE sampler_descriptor{};
+    uint64_t texture_handle = 0;
+};
+static_assert(sizeof(NvApiGetCudaMergedTextureSamplerObjectParams) == 48,
+              "unexpected NVAPI merged texture object layout");
+enum NvApiGetCudaIndependentDescriptorObjectType : uint32_t {
+    kNvApiCudaSurface = 0,
+    kNvApiCudaTexture = 1,
+};
+struct NvApiGetCudaIndependentDescriptorObjectParams {
+    size_t struct_size_in = 0;
+    size_t struct_size_out = 0;
+    ID3D12Device *device = nullptr;
+    NvApiGetCudaIndependentDescriptorObjectType type = kNvApiCudaSurface;
+    D3D12_CPU_DESCRIPTOR_HANDLE descriptor{};
+    uint64_t handle = 0;
+};
+static_assert(sizeof(NvApiGetCudaIndependentDescriptorObjectParams) == 48,
+              "unexpected NVAPI independent descriptor object layout");
+using NvApiStatus = int;
+using NvApiCreateCuModuleFn = NvApiStatus(__stdcall *)(void *, const void *, uint32_t, uint64_t *);
+using NvApiCreateCuFunctionFn = NvApiStatus(__stdcall *)(void *, uint64_t, const char *, uint64_t *);
+using NvApiLaunchCuKernelChainFn = NvApiStatus(__stdcall *)(
+    void *, const NvApiCuKernelLaunchParams *, uint32_t);
+using NvApiGetCudaMergedTextureSamplerObjectFn = NvApiStatus(__stdcall *)(
+    NvApiGetCudaMergedTextureSamplerObjectParams *);
+using NvApiGetCudaIndependentDescriptorObjectFn = NvApiStatus(__stdcall *)(
+    NvApiGetCudaIndependentDescriptorObjectParams *);
+NvApiCreateCuModuleFn g_nvapi_create_cu_module = nullptr;
+NvApiCreateCuFunctionFn g_nvapi_create_cu_function = nullptr;
+NvApiLaunchCuKernelChainFn g_nvapi_launch_cu_kernel_chain = nullptr;
+NvApiGetCudaMergedTextureSamplerObjectFn g_nvapi_get_cuda_merged_texture_sampler_object = nullptr;
+NvApiGetCudaIndependentDescriptorObjectFn g_nvapi_get_cuda_independent_descriptor_object = nullptr;
+unsigned int g_nvapi_launch_dump_index = 0;
+unsigned int g_nvapi_descriptor_dump_index = 0;
+
+void capture_nvapi_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE descriptor, const char *kind) {
+    if (!env_enabled("DLSS5_NVAPI_CAPTURE_LAUNCH") || !descriptor.ptr) return;
+    constexpr size_t kD3D12DescriptorBytes = 32;
+    std::array<uint8_t, kD3D12DescriptorBytes> bytes{};
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(descriptor.ptr),
+                           bytes.data(), bytes.size(), &copied) || copied != bytes.size()) {
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_descriptor_read_failed kind=" << kind << " descriptor=0x"
+              << std::hex << descriptor.ptr << " copied=" << std::dec << copied;
+            return s.str();
+        });
+        return;
+    }
+    const unsigned int index = g_nvapi_descriptor_dump_index++;
+    std::ostringstream name;
+    name << "dlss5_nvapi_descriptor_" << index << '_' << kind << ".bin";
+    const bool written = write_runtime_binary(name.str(), bytes.data(), bytes.size());
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_descriptor_written kind=" << kind << " descriptor=0x" << std::hex
+          << descriptor.ptr << " file=" << name.str() << " bytes=" << std::dec
+          << bytes.size() << " written=" << written;
+        return s.str();
+    });
+}
+
+void dump_nvapi_launch_payload(void *command_list,
+                               const NvApiCuKernelLaunchParams *kernels,
+                               uint32_t count) {
+    if (!kernels || count == 0 || count > 0x100) return;
+    std::vector<NvApiCuKernelLaunchParams> copied(count);
+    SIZE_T bytes = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), kernels, copied.data(), copied.size() * sizeof(copied[0]), &bytes) ||
+        bytes != copied.size() * sizeof(copied[0])) return;
+    const unsigned int sequence = g_nvapi_launch_dump_index++;
+    std::ostringstream kernel_name;
+    kernel_name << "dlss5_nvapi_launch_" << sequence << "_kernels.bin";
+    const bool kernel_written = write_runtime_binary(
+        kernel_name.str(), copied.data(), copied.size() * sizeof(copied[0]));
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_launch_chain command_list=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(command_list) << " kernels=0x"
+          << reinterpret_cast<uintptr_t>(kernels) << " count=" << std::dec << count
+          << " kernel_file=" << kernel_name.str() << " kernel_written=" << kernel_written;
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto &kernel = copied[i];
+            s << " item" << i << "={function=0x" << std::hex << kernel.function
+              << ",grid=" << std::dec << kernel.grid.x << ',' << kernel.grid.y << ','
+              << kernel.grid.z << ",block=" << kernel.block.x << ',' << kernel.block.y
+              << ',' << kernel.block.z << ",shared=" << kernel.dynamic_shared_bytes
+              << ",params=0x" << std::hex << reinterpret_cast<uintptr_t>(kernel.params)
+              << ",param_size=" << std::dec << kernel.param_size << '}';
+        }
+        return s.str();
+    });
+    if (GetEnvironmentVariableA("DLSS5_NVAPI_CAPTURE_LAUNCH", nullptr, 0) == 0) return;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto &kernel = copied[i];
+        if (!kernel.params || kernel.param_size == 0 || kernel.param_size > 0x100000) continue;
+        std::vector<uint8_t> params(kernel.param_size);
+        bytes = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), kernel.params, params.data(), params.size(), &bytes) ||
+            bytes != params.size()) continue;
+        std::ostringstream param_name;
+        param_name << "dlss5_nvapi_launch_" << sequence << "_item" << i << "_params.bin";
+        const bool written = write_runtime_binary(param_name.str(), params.data(), params.size());
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_launch_params_written sequence=" << std::dec << sequence
+              << " item=" << i << " file=" << param_name.str() << " written=" << written
+              << " bytes=" << params.size() << " sha256=uncomputed";
+            return s.str();
+        });
+    }
+}
+
+NvApiStatus __stdcall hook_nvapi_create_cu_module(
+    void *device, const void *blob, uint32_t size, uint64_t *module) {
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_create_cu_module device=0x" << std::hex << reinterpret_cast<uintptr_t>(device)
+          << " blob=0x" << reinterpret_cast<uintptr_t>(blob) << " size=" << std::dec << size
+          << " module_out=0x" << std::hex << reinterpret_cast<uintptr_t>(module);
+        return s.str();
+    });
+    if (blob && size > 0 && size <= 0x4000000 &&
+        GetEnvironmentVariableA("DLSS5_NVAPI_CAPTURE_LAUNCH", nullptr, 0) > 0) {
+        std::vector<uint8_t> bytes(size);
+        SIZE_T copied = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), blob, bytes.data(), bytes.size(), &copied) &&
+            copied == bytes.size()) {
+            std::ostringstream name;
+            name << "dlss5_nvapi_cu_module_" << g_nvapi_launch_dump_index++ << ".bin";
+            write_runtime_binary(name.str(), bytes.data(), bytes.size());
+            log([&] { return std::string("nvapi_cu_module_written file=") + name.str(); });
+        }
+    }
+    const NvApiStatus status = g_nvapi_create_cu_module
+        ? g_nvapi_create_cu_module(device, blob, size, module) : 1;
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_create_cu_module_return status=" << std::dec << status << " module=0x"
+          << std::hex << (module ? *module : 0);
+        return s.str();
+    });
+    return status;
+}
+
+NvApiStatus __stdcall hook_nvapi_create_cu_function(
+    void *device, uint64_t module, const char *name, uint64_t *function) {
+    const NvApiStatus status = g_nvapi_create_cu_function
+        ? g_nvapi_create_cu_function(device, module, name, function) : 1;
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_create_cu_function device=0x" << std::hex << reinterpret_cast<uintptr_t>(device)
+          << " module=0x" << module << " name=" << (name ? name : "<null>")
+          << " function=0x" << (function ? *function : 0) << " status=" << std::dec << status;
+        return s.str();
+    });
+    return status;
+}
+
+NvApiStatus __stdcall hook_nvapi_launch_cu_kernel_chain(
+    void *command_list, const NvApiCuKernelLaunchParams *kernels, uint32_t count) {
+    dump_nvapi_launch_payload(command_list, kernels, count);
+    const NvApiStatus status = g_nvapi_launch_cu_kernel_chain
+        ? g_nvapi_launch_cu_kernel_chain(command_list, kernels, count) : 1;
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_launch_chain_return status=" << std::dec << status;
+        return s.str();
+    });
+    return status;
+}
+
+NvApiStatus __stdcall hook_nvapi_get_cuda_merged_texture_sampler_object(
+    NvApiGetCudaMergedTextureSamplerObjectParams *params) {
+    const NvApiStatus status = g_nvapi_get_cuda_merged_texture_sampler_object
+        ? g_nvapi_get_cuda_merged_texture_sampler_object(params) : 1;
+    if (params) {
+        capture_nvapi_descriptor(params->texture_descriptor, "texture");
+        capture_nvapi_descriptor(params->sampler_descriptor, "sampler");
+    }
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_get_cuda_merged_texture_sampler_object status=" << std::dec << status;
+        if (!params) return s.str() + " params=null";
+        ID3D12Resource *texture = resolve_d3d12_cpu_descriptor(params->texture_descriptor);
+        ID3D12Resource *sampler = resolve_d3d12_cpu_descriptor(params->sampler_descriptor);
+        s << " struct_in=" << params->struct_size_in
+          << " struct_out=" << params->struct_size_out
+          << " device=0x" << std::hex << reinterpret_cast<uintptr_t>(params->device)
+          << " tex_desc=0x" << params->texture_descriptor.ptr
+          << " smp_desc=0x" << params->sampler_descriptor.ptr
+          << " texture_handle=0x" << params->texture_handle
+          << " tex_resource=0x" << reinterpret_cast<uintptr_t>(texture);
+        append_d3d12_resource(s, texture);
+        s << " smp_resource=0x" << reinterpret_cast<uintptr_t>(sampler);
+        append_d3d12_resource(s, sampler);
+        return s.str();
+    });
+    return status;
+}
+
+NvApiStatus __stdcall hook_nvapi_get_cuda_independent_descriptor_object(
+    NvApiGetCudaIndependentDescriptorObjectParams *params) {
+    const NvApiStatus status = g_nvapi_get_cuda_independent_descriptor_object
+        ? g_nvapi_get_cuda_independent_descriptor_object(params) : 1;
+    if (params) capture_nvapi_descriptor(params->descriptor, "independent");
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_get_cuda_independent_descriptor_object status=" << std::dec << status;
+        if (!params) return s.str() + " params=null";
+        ID3D12Resource *resource = resolve_d3d12_cpu_descriptor(params->descriptor);
+        s << " struct_in=" << params->struct_size_in
+          << " struct_out=" << params->struct_size_out
+          << " device=0x" << std::hex << reinterpret_cast<uintptr_t>(params->device)
+          << " type=" << std::dec << uint32_t(params->type)
+          << " descriptor=0x" << std::hex << params->descriptor.ptr
+          << " handle=0x" << params->handle
+          << " resource=0x" << reinterpret_cast<uintptr_t>(resource);
+        append_d3d12_resource(s, resource);
+        return s.str();
+    });
+    return status;
+}
+
+void *wrap_nvapi_result(unsigned int id, void *result) {
+    if (!result) return result;
+    if (id == 0xad1a677d) {
+        g_nvapi_create_cu_module = reinterpret_cast<NvApiCreateCuModuleFn>(result);
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_special_wrapper id=0x" << std::hex << id
+              << " name=CreateCuModule original=0x" << reinterpret_cast<uintptr_t>(result);
+            return s.str();
+        });
+        return reinterpret_cast<void *>(&hook_nvapi_create_cu_module);
+    }
+    if (id == 0xe2436e22) {
+        g_nvapi_create_cu_function = reinterpret_cast<NvApiCreateCuFunctionFn>(result);
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_special_wrapper id=0x" << std::hex << id
+              << " name=CreateCuFunction original=0x" << reinterpret_cast<uintptr_t>(result);
+            return s.str();
+        });
+        return reinterpret_cast<void *>(&hook_nvapi_create_cu_function);
+    }
+    if (id == 0x24973538) {
+        g_nvapi_launch_cu_kernel_chain = reinterpret_cast<NvApiLaunchCuKernelChainFn>(result);
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_special_wrapper id=0x" << std::hex << id
+              << " name=LaunchCuKernelChain original=0x" << reinterpret_cast<uintptr_t>(result);
+            return s.str();
+        });
+        return reinterpret_cast<void *>(&hook_nvapi_launch_cu_kernel_chain);
+    }
+    if (id == 0x329fe6e0) {
+        g_nvapi_get_cuda_merged_texture_sampler_object =
+            reinterpret_cast<NvApiGetCudaMergedTextureSamplerObjectFn>(result);
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_special_wrapper id=0x" << std::hex << id
+              << " name=GetCudaMergedTextureSamplerObject original=0x"
+              << reinterpret_cast<uintptr_t>(result);
+            return s.str();
+        });
+        return reinterpret_cast<void *>(&hook_nvapi_get_cuda_merged_texture_sampler_object);
+    }
+    if (id == 0x0ddac234) {
+        g_nvapi_get_cuda_independent_descriptor_object =
+            reinterpret_cast<NvApiGetCudaIndependentDescriptorObjectFn>(result);
+        log([&] {
+            std::ostringstream s;
+            s << "nvapi_special_wrapper id=0x" << std::hex << id
+              << " name=GetCudaIndependentDescriptorObject original=0x"
+              << reinterpret_cast<uintptr_t>(result);
+            return s.str();
+        });
+        return reinterpret_cast<void *>(&hook_nvapi_get_cuda_independent_descriptor_object);
+    }
+    std::lock_guard<std::mutex> lock(g_dark_mutex);
+    for (const NvApiWrapper &existing : g_nvapi_wrappers) {
+        if (existing.id == id && existing.original == result) return existing.replacement;
+    }
+    auto record = std::make_unique<DarkCallRecord>();
+    DarkCallRecord *record_ptr = record.get();
+    record_ptr->table = reinterpret_cast<const void *>(static_cast<uintptr_t>(id));
+    record_ptr->index = id;
+    record_ptr->original = result;
+    g_dark_owned_records.push_back(std::move(record));
+    g_dark_records.push_back(record_ptr);
+    void *replacement = make_dark_thunk(result, record_ptr);
+    if (!replacement) {
+        g_dark_records.pop_back();
+        g_dark_owned_records.pop_back();
+        return result;
+    }
+    g_nvapi_wrappers.push_back({id, result, replacement});
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_result_wrapped id=0x" << std::hex << id << " original=0x"
+          << reinterpret_cast<uintptr_t>(result) << " wrapper=0x"
+          << reinterpret_cast<uintptr_t>(replacement);
+        return s.str();
+    });
+    return replacement;
+}
+
 void proxy_dark_table(const void **table_address, const void *uuid) {
     if (!table_address || !*table_address) return;
     const auto *original = static_cast<const uintptr_t *>(*table_address);
@@ -1647,6 +2003,69 @@ void proxy_dark_table(const void **table_address, const void *uuid) {
     });
     g_dark_tables.push_back(std::move(proxy));
     if (g_dark_trace_header) g_dark_trace_header->record_count = g_dark_trace_record_cursor;
+}
+
+size_t hook_ngx_vtable(HMODULE module, const char *name, uintptr_t vtable_rva,
+                       uintptr_t expected_col_rva, size_t entries) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    auto *vtable = reinterpret_cast<uintptr_t *>(base + vtable_rva);
+    if (vtable[-1] != base + expected_col_rva) {
+        log([&] {
+            std::ostringstream s;
+            s << "ngx_vtable_unmatched name=" << name << " module=0x" << std::hex << base
+              << " vtable=0x" << reinterpret_cast<uintptr_t>(vtable)
+              << " col=0x" << vtable[-1];
+            return s.str();
+        });
+        return 0;
+    }
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(vtable, &region, sizeof(region)) != sizeof(region)) return 0;
+    DWORD old_protect = 0;
+    if (!VirtualProtect(vtable, entries * sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) return 0;
+    size_t hooked = 0;
+    for (size_t index = 0; index < entries; ++index) {
+        const uintptr_t original = vtable[index];
+        if (original < base || original >= base + 0xab000) continue;
+        auto record = std::make_unique<DarkCallRecord>();
+        DarkCallRecord *record_ptr = record.get();
+        record_ptr->table = vtable;
+        record_ptr->index = index;
+        record_ptr->original = reinterpret_cast<void *>(original);
+        g_dark_owned_records.push_back(std::move(record));
+        g_dark_records.push_back(record_ptr);
+        void *thunk = make_dark_thunk(reinterpret_cast<void *>(original), record_ptr);
+        if (!thunk) {
+            g_dark_records.pop_back();
+            g_dark_owned_records.pop_back();
+            continue;
+        }
+        vtable[index] = reinterpret_cast<uintptr_t>(thunk);
+        ++hooked;
+    }
+    DWORD ignored = 0;
+    VirtualProtect(vtable, entries * sizeof(uintptr_t), old_protect, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), vtable, entries * sizeof(uintptr_t));
+    log([&] {
+        std::ostringstream s;
+        s << "ngx_vtable_hooks name=" << name << " module=0x" << std::hex << base
+          << " vtable=0x" << reinterpret_cast<uintptr_t>(vtable)
+          << " hooked=" << std::dec << hooked;
+        return s.str();
+    });
+    return hooked;
+}
+
+void install_ngx_cuda_vtable_hooks() {
+    char enabled[4]{};
+    if (GetEnvironmentVariableA("DLSS5_NGX_VTABLE_HOOK", enabled, sizeof(enabled)) == 0) return;
+    HMODULE module = GetModuleHandleW(L"nvngx_dlssnr.dll");
+    if (!module) return;
+    static uintptr_t installed_base = 0;
+    if (installed_base == reinterpret_cast<uintptr_t>(module)) return;
+    const size_t cuda = hook_ngx_vtable(module, "cuda", 0xbc9e8, 0xcf9c0, 89);
+    const size_t d3d12 = hook_ngx_vtable(module, "d3d12", 0xb6988, 0xcecb8, 86);
+    if (cuda || d3d12) installed_base = reinterpret_cast<uintptr_t>(module);
 }
 
 void dump_dark_records() {
@@ -1936,6 +2355,9 @@ void *__stdcall hook_nvapi_query_interface(unsigned int id) {
           << reinterpret_cast<uintptr_t>(result);
         return s.str();
     });
+    char wrap[4]{};
+    if (GetEnvironmentVariableA("DLSS5_NVAPI_WRAP_RESULTS", wrap, sizeof(wrap)) > 0)
+        result = wrap_nvapi_result(id, result);
     return result;
 }
 
@@ -2292,6 +2714,8 @@ HMODULE WINAPI hook_load_library_ex_w(LPCWSTR name, HANDLE file, DWORD flags) {
                                 << std::hex << reinterpret_cast<uintptr_t>(module); return s.str();
     });
     if (module && module_name(module).find(L"nvcuda") != std::wstring::npos) hook_cuda_module(module);
+    if (module && module_name(module).find(L"nvngx_dlssnr") != std::wstring::npos)
+        install_ngx_cuda_vtable_hooks();
     return module;
 }
 
@@ -2302,6 +2726,8 @@ HMODULE WINAPI hook_load_library_w(LPCWSTR name) {
                                 << std::hex << reinterpret_cast<uintptr_t>(module); return s.str();
     });
     if (module && module_name(module).find(L"nvcuda") != std::wstring::npos) hook_cuda_module(module);
+    if (module && module_name(module).find(L"nvngx_dlssnr") != std::wstring::npos)
+        install_ngx_cuda_vtable_hooks();
     return module;
 }
 
@@ -2328,6 +2754,7 @@ void install_driver_hooks() {
 void on_init_device(device *dev) {
     init_dark_trace();
     ensure_min_hook_initialized();
+    install_ngx_cuda_vtable_hooks();
     if (env_enabled("DLSS5_DARK_NO_PRIVATE_HOOK")) {
         log([] { return std::string("driver_hooks_disabled_by_environment"); });
     } else {
@@ -2496,6 +2923,7 @@ void on_bind_pipeline(command_list *, pipeline_stage stage, pipeline pipeline_ha
 }
 
 bool on_dispatch(command_list *, uint32_t x, uint32_t y, uint32_t z) {
+    install_ngx_cuda_vtable_hooks();
     log([&] {
         std::ostringstream s;
         s << "dispatch " << x << ' ' << y << ' ' << z;
@@ -2513,6 +2941,7 @@ void on_reshade_finish_effects(effect_runtime *, command_list *, resource_view, 
 }
 
 void on_execute_command_list(command_queue *, command_list *) {
+    install_ngx_cuda_vtable_hooks();
     log([] { return std::string("execute_command_list"); });
 }
 

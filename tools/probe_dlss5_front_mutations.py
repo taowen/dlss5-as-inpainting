@@ -548,6 +548,14 @@ def run_case(
             env["DLSS5_DARK_DUMP_STRUCTS"] = "1"
         if args.dump_dark_deep:
             env["DLSS5_DARK_DUMP_DEEP"] = "1"
+        if args.wrap_nvapi:
+            env["DLSS5_NVAPI_WRAP_RESULTS"] = "1"
+        else:
+            env.pop("DLSS5_NVAPI_WRAP_RESULTS", None)
+        if args.capture_nvapi_launch:
+            env["DLSS5_NVAPI_CAPTURE_LAUNCH"] = "1"
+        else:
+            env.pop("DLSS5_NVAPI_CAPTURE_LAUNCH", None)
         old_env = os.environ.copy()
         os.environ.update(env)
         try:
@@ -694,6 +702,16 @@ def main() -> int:
         action="store_true",
         help="also follow one level of private slot 13/14 pointers",
     )
+    parser.add_argument(
+        "--wrap-nvapi",
+        action="store_true",
+        help="wrap NVAPI function pointers returned by QueryInterface",
+    )
+    parser.add_argument(
+        "--capture-nvapi-launch",
+        action="store_true",
+        help="dump LaunchCuKernelChain descriptors and parameter payloads",
+    )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
 
@@ -836,6 +854,8 @@ def main() -> int:
                 "baseline_only": args.baseline_only,
                 "dump_dark_structs": args.dump_dark_structs,
                 "dump_dark_deep": args.dump_dark_deep,
+                "wrap_nvapi": args.wrap_nvapi,
+                "capture_nvapi_launch": args.capture_nvapi_launch,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),
