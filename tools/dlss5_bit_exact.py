@@ -233,3 +233,12 @@ class DLSS5BitExactCarrier(nn.Module):
             self.close()
         except Exception:  # noqa: BLE001 - destructors must not raise
             pass
+
+
+class DLSS5BitExactModel(DLSS5BitExactCarrier):
+    """Public model name for the exact native-CUBIN PyTorch interface.
+
+    This is an alias-level subclass rather than a second implementation: the
+    native feature session, temporal state, input contract, and byte-level
+    guarantee are identical to :class:`DLSS5BitExactCarrier`.
+    """

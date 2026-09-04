@@ -129,9 +129,9 @@ For a PyTorch-facing inference call that preserves that guarantee, use the
 inference-only native carrier:
 
 ```python
-from tools.dlss5_bit_exact import DLSS5BitExactCarrier
+from tools.dlss5_bit_exact import DLSS5BitExactModel
 
-with DLSS5BitExactCarrier(
+with DLSS5BitExactModel(
     r"<prepared-runtime>\dlss5_eval.exe", width=256, height=256
 ) as model:
     rgba16 = model(rgb_fp16_nchw)  # [1, 4, 256, 256], torch.float16
