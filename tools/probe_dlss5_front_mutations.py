@@ -344,6 +344,8 @@ def run_case(
         original_path, neural_path, all_captures = capture_pair(
             runtime, args.width, args.height, args.capture_all_neural
         )
+        hidden_neural = all_captures[-7 + 2] if args.capture_all_neural else None
+        final_texture = all_captures[-7 + 5] if args.capture_all_neural else None
         result.update(
             {
                 "status": "ok",
@@ -355,6 +357,8 @@ def run_case(
                     [CAPTURE_ALL_LAYOUT[index % len(CAPTURE_ALL_LAYOUT)] for index in range(len(all_captures))]
                     if args.capture_all_neural else ["legacy_capture"] * len(all_captures)
                 ),
+                "hidden_neural_capture": str(hidden_neural) if hidden_neural else None,
+                "final_texture_capture": str(final_texture) if final_texture else None,
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
                 "original_summary": summary(read_rgba16f(original_path, args.width, args.height)),
                 "neural_summary": summary(read_rgba16f(neural_path, args.width, args.height)),
@@ -425,6 +429,14 @@ def main() -> int:
             read_rgba16f(Path(path), args.width, args.height)
             for path in baseline["all_captures"]
         ]
+        baseline_hidden = (
+            read_rgba16f(Path(baseline["hidden_neural_capture"]), args.width, args.height)
+            if baseline["hidden_neural_capture"] else None
+        )
+        baseline_final_texture = (
+            read_rgba16f(Path(baseline["final_texture_capture"]), args.width, args.height)
+            if baseline["final_texture_capture"] else None
+        )
         for report in reports:
             if report["status"] != "ok":
                 continue
@@ -446,6 +458,16 @@ def main() -> int:
                     for values, baseline_values in zip(capture_values, baseline_captures)
                 ],
             }
+            if baseline_hidden is not None and report["hidden_neural_capture"]:
+                report["diff_vs_baseline"]["hidden_neural_capture"] = difference(
+                    read_rgba16f(Path(report["hidden_neural_capture"]), args.width, args.height),
+                    baseline_hidden,
+                )
+            if baseline_final_texture is not None and report["final_texture_capture"]:
+                report["diff_vs_baseline"]["final_texture_capture"] = difference(
+                    read_rgba16f(Path(report["final_texture_capture"]), args.width, args.height),
+                    baseline_final_texture,
+                )
 
     output = run_root / "report.json"
     output.write_text(
