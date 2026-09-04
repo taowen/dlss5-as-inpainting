@@ -1,0 +1,30 @@
+{
+  "width": 256,
+  "height": 256,
+  "format": "RGBA16F",
+  "runtime": "RTX 5080 native DLSS5 carrier",
+  "capture_mode": "DLSS5_D3D12_CAPTURE_NEURAL=1",
+  "source_files": {
+    "color_original": {
+      "file": "color_original.rgba16f.bin",
+      "sha256": "308E0CD7BEA75DADA0F2352A471BC466662A667AD71219669931BB5860BF37FE",
+      "mean": [0.499838, 0.499837, 0.249923, 1.0]
+    },
+    "color_neural": {
+      "file": "color_neural.rgba16f.bin",
+      "sha256": "AB02958A6F3B5BB46A464F55A1E38E7D16C697D317F4464DBD8F48E0806B106B",
+      "mean": [0.626684, 0.626682, 0.491251, 1.0]
+    },
+    "checker_original": {
+      "file": "checker_original.rgba16f.bin",
+      "sha256": "03D995B8639C4EBFC329B37CAAF532A4827B1AE1A9DEA0EE7DF5BB43C71662F6",
+      "mean": [0.449284, 0.404327, 0.359444, 1.0]
+    },
+    "checker_neural": {
+      "file": "checker_neural.rgba16f.bin",
+      "sha256": "8FA2AFCF410772FDECAA5EA3EDCAD221240AB72F6E8D88829FB99FB12721AEEB",
+      "mean": [0.537337, 0.511911, 0.484781, 1.0]
+    }
+  },
+  "note": "These are image-space live Neural intermediates, not internal DLSS5 activation tensors."
+}

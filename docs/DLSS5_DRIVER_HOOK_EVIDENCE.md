@@ -32,6 +32,12 @@ Set `DLSS5_DARK_SCAN=1` to dump CUBIN-like pointed arguments. Add
 `DLSS5_DARK_SCAN_ALL=1` to scan every called private slot instead of the
 high-value slots 12 and 50.
 
+Set `DLSS5_D3D12_CAPTURE_NEURAL=1` to enable the optional GPU readback. It
+copies the two root-0 SRV textures after the `Neural` composition dispatch and
+writes `dlss5_d3d12_capture_<pid>_<n>.rgba16f.bin` beside the harness. The
+capture uses a fence and restores the source resource state before returning;
+the clean-control metrics are a required regression check when using it.
+
 ## RTX 5080 result
 
 On the local driver/runtime pair:
@@ -90,6 +96,24 @@ the heap base, while the output table used descriptor 4 or 5. This matches the
 two shader resource layouts above and identifies the final Original/Neural
 composition pass.
 
+The optional readback was run once per input with a 256x256 fence-synchronized
+probe. The root-0 descriptor 0 capture matched the input ramp/checker, while
+the second source consumed by the `Neural` shader had these means:
+
+```text
+color   original [0.499838, 0.499837, 0.249923]
+color   neural   [0.626684, 0.626682, 0.491251]
+checker original [0.449284, 0.404327, 0.359444]
+checker neural   [0.537337, 0.511911, 0.484781]
+```
+
+This is the first direct image-space readback of the live Neural result in the
+carrier. It is not an internal DLSS5 activation/tensor dump: the driver-owned
+pre-front feature producer and its tensor layout remain opaque.
+
+The four raw RGBA16F planes and their hashes are committed under
+`evidence/dlss5_d3d12_capture_256/` for offline comparison.
+
 ## Driver-side CUBIN evidence
 
 With `DLSS5_DARK_SCAN=1`, slot 12's `r8` argument is a repeatable 15,656-byte
@@ -122,11 +146,12 @@ or command-buffer payload.
 ## Remaining capture work
 
 The current recorder stores first/latest snapshots and can dump pointed CUBIN
-containers, but it still does not expose the driver-owned neural command
-description or tensor payload. The D3D12 evidence proves the visible carrier
-composition pass; the private table evidence proves the lower driver boundary.
-The remaining blocker for a bit-exact PyTorch model is the missing pre-front
-tensor producer and its driver resource bindings. The previous direct
+containers. The optional D3D12 readback exposes the live Neural image, but not
+the driver-owned pre-front tensor or its internal command description. The
+D3D12 evidence proves the visible carrier composition pass; the private table
+evidence proves the lower driver boundary. The remaining blocker for a
+bit-exact PyTorch model is the missing pre-front tensor producer and its driver
+resource bindings. The previous direct
 `STS -> STG` mutation had no valid driver binding and correctly resulted in a
 device hang, so the next safe step is to decode the high-frequency private
 slot structures/resource handles rather than mutate another store.

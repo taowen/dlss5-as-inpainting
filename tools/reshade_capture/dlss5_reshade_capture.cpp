@@ -8,6 +8,7 @@
 #include <reshade.hpp>
 
 #include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <iomanip>
@@ -17,6 +18,7 @@
 #include <string>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 using namespace reshade::api;
@@ -50,6 +52,10 @@ using D3D12DispatchFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, U
 using D3D12SetPipelineStateFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12PipelineState *);
 using D3D12SetComputeRootSignatureFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12RootSignature *);
 using D3D12SetComputeRootDescriptorTableFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
+using D3D12SetComputeRoot32BitConstantsFn = void(STDMETHODCALLTYPE *)(
+    ID3D12GraphicsCommandList *, UINT, UINT, const void *, UINT);
+using D3D12ExecuteCommandListsFn = void(STDMETHODCALLTYPE *)(
+    ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 using D3D12CreateComputePipelineStateFn = HRESULT(STDMETHODCALLTYPE *)(
     ID3D12Device *, const D3D12_COMPUTE_PIPELINE_STATE_DESC *, REFIID, void **);
 using D3D12CreateDescriptorHeapFn = HRESULT(STDMETHODCALLTYPE *)(
@@ -58,15 +64,322 @@ using D3D12CreateShaderResourceViewFn = void(STDMETHODCALLTYPE *)(
     ID3D12Device *, ID3D12Resource *, const D3D12_SHADER_RESOURCE_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
 using D3D12CreateUnorderedAccessViewFn = void(STDMETHODCALLTYPE *)(
     ID3D12Device *, ID3D12Resource *, ID3D12Resource *, const D3D12_UNORDERED_ACCESS_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
+using D3D12CopyDescriptorsFn = void(STDMETHODCALLTYPE *)(
+    ID3D12Device *, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *,
+    UINT, const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *, D3D12_DESCRIPTOR_HEAP_TYPE);
+using D3D12CopyDescriptorsSimpleFn = void(STDMETHODCALLTYPE *)(
+    ID3D12Device *, UINT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
+    D3D12_DESCRIPTOR_HEAP_TYPE);
 D3D12DispatchFn g_d3d12_dispatch = nullptr;
 D3D12SetPipelineStateFn g_d3d12_set_pipeline_state = nullptr;
 D3D12SetComputeRootSignatureFn g_d3d12_set_compute_root_signature = nullptr;
 D3D12SetComputeRootDescriptorTableFn g_d3d12_set_compute_root_descriptor_table = nullptr;
+D3D12SetComputeRoot32BitConstantsFn g_d3d12_set_compute_root_32bit_constants = nullptr;
+D3D12ExecuteCommandListsFn g_d3d12_execute_command_lists = nullptr;
+ID3D12Device *g_d3d12_capture_device = nullptr;
+ID3D12Fence *g_d3d12_capture_fence = nullptr;
+HANDLE g_d3d12_capture_event = nullptr;
+UINT64 g_d3d12_capture_fence_value = 0;
+unsigned int g_d3d12_capture_index = 0;
 D3D12CreateComputePipelineStateFn g_d3d12_create_compute_pipeline_state = nullptr;
 D3D12CreateDescriptorHeapFn g_d3d12_create_descriptor_heap = nullptr;
 D3D12CreateShaderResourceViewFn g_d3d12_create_shader_resource_view = nullptr;
 D3D12CreateUnorderedAccessViewFn g_d3d12_create_unordered_access_view = nullptr;
+D3D12CopyDescriptorsFn g_d3d12_copy_descriptors = nullptr;
+D3D12CopyDescriptorsSimpleFn g_d3d12_copy_descriptors_simple = nullptr;
 unsigned int g_d3d12_pso_index = 0;
+struct D3D12DescriptorHeapTrace {
+    ID3D12DescriptorHeap *heap = nullptr;
+    D3D12_DESCRIPTOR_HEAP_DESC desc{};
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_start{};
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu_start{};
+    UINT increment = 0;
+    std::unordered_map<size_t, ID3D12Resource *> resources;
+};
+struct D3D12CommandListTrace {
+    ID3D12PipelineState *pipeline = nullptr;
+    std::unordered_map<UINT, D3D12_GPU_DESCRIPTOR_HANDLE> root_tables;
+};
+std::mutex g_d3d12_trace_mutex;
+std::vector<D3D12DescriptorHeapTrace> g_d3d12_heaps;
+std::unordered_map<ID3D12GraphicsCommandList *, D3D12CommandListTrace> g_d3d12_command_lists;
+std::unordered_map<ID3D12PipelineState *, bool> g_d3d12_neural_psos;
+
+struct D3D12PendingTextureCapture {
+    ID3D12Resource *source = nullptr;
+    ID3D12Resource *readback = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT num_rows = 0;
+    UINT64 row_size = 0;
+    UINT64 total_bytes = 0;
+    unsigned int index = 0;
+};
+std::vector<D3D12PendingTextureCapture> g_d3d12_pending_captures;
+
+template <typename F>
+void log(F &&make_line);
+bool write_runtime_binary(const std::string &file_name, const void *data, size_t bytes);
+
+void remember_d3d12_cpu_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, ID3D12Resource *resource) {
+    std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+    for (D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
+        if (!heap.cpu_start.ptr || !heap.increment || handle.ptr < heap.cpu_start.ptr) continue;
+        const size_t delta = static_cast<size_t>(handle.ptr - heap.cpu_start.ptr);
+        if (delta % heap.increment != 0 || delta / heap.increment >= heap.desc.NumDescriptors) continue;
+        heap.resources[delta / heap.increment] = resource;
+        return;
+    }
+}
+
+void copy_d3d12_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE destination,
+                           D3D12_CPU_DESCRIPTOR_HANDLE source,
+                           D3D12_DESCRIPTOR_HEAP_TYPE type) {
+    std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+    D3D12DescriptorHeapTrace *destination_heap = nullptr;
+    D3D12DescriptorHeapTrace *source_heap = nullptr;
+    size_t destination_index = 0;
+    size_t source_index = 0;
+    for (D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
+        if (heap.desc.Type != type || !heap.increment) continue;
+        if (heap.cpu_start.ptr && destination.ptr >= heap.cpu_start.ptr) {
+            const size_t delta = static_cast<size_t>(destination.ptr - heap.cpu_start.ptr);
+            if (delta % heap.increment == 0 && delta / heap.increment < heap.desc.NumDescriptors) {
+                destination_heap = &heap;
+                destination_index = delta / heap.increment;
+            }
+        }
+        if (heap.cpu_start.ptr && source.ptr >= heap.cpu_start.ptr) {
+            const size_t delta = static_cast<size_t>(source.ptr - heap.cpu_start.ptr);
+            if (delta % heap.increment == 0 && delta / heap.increment < heap.desc.NumDescriptors) {
+                source_heap = &heap;
+                source_index = delta / heap.increment;
+            }
+        }
+    }
+    if (!destination_heap || !source_heap) return;
+    const auto found = source_heap->resources.find(source_index);
+    destination_heap->resources[destination_index] =
+        found == source_heap->resources.end() ? nullptr : found->second;
+}
+
+std::string resolve_d3d12_gpu_table(D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+    std::ostringstream out;
+    std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+    for (const D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
+        if (!heap.gpu_start.ptr || !heap.increment || handle.ptr < heap.gpu_start.ptr) continue;
+        const size_t delta = static_cast<size_t>(handle.ptr - heap.gpu_start.ptr);
+        if (delta % heap.increment != 0 || delta / heap.increment >= heap.desc.NumDescriptors) continue;
+        const size_t first = delta / heap.increment;
+        out << "heap=0x" << std::hex << reinterpret_cast<uintptr_t>(heap.heap)
+            << " first=" << std::dec << first << " resources=";
+        const size_t count = std::min<size_t>(heap.desc.NumDescriptors - first, 8);
+        for (size_t i = 0; i < count; ++i) {
+            const auto found = heap.resources.find(first + i);
+            out << "0x" << std::hex
+                << (found == heap.resources.end() ? 0 : reinterpret_cast<uintptr_t>(found->second)) << ',';
+        }
+        return out.str();
+    }
+    return "unresolved";
+}
+
+ID3D12Resource *resolve_d3d12_gpu_descriptor(D3D12_GPU_DESCRIPTOR_HANDLE handle, size_t offset) {
+    std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+    for (const D3D12DescriptorHeapTrace &heap : g_d3d12_heaps) {
+        if (!heap.gpu_start.ptr || !heap.increment || handle.ptr < heap.gpu_start.ptr) continue;
+        const size_t delta = static_cast<size_t>(handle.ptr - heap.gpu_start.ptr);
+        if (delta % heap.increment != 0) continue;
+        const size_t first = delta / heap.increment + offset;
+        if (first >= heap.desc.NumDescriptors) continue;
+        const auto found = heap.resources.find(first);
+        return found == heap.resources.end() ? nullptr : found->second;
+    }
+    return nullptr;
+}
+
+bool env_enabled(const char *name) {
+    char value[8]{};
+    return GetEnvironmentVariableA(name, value, sizeof(value)) > 0 && value[0] != '0';
+}
+
+bool contains_ascii(const void *data, size_t bytes, const char *needle) {
+    if (!data || !needle) return false;
+    const size_t needle_bytes = std::strlen(needle);
+    if (needle_bytes == 0 || needle_bytes > bytes) return false;
+    const auto *source = static_cast<const uint8_t *>(data);
+    for (size_t i = 0; i + needle_bytes <= bytes; ++i)
+        if (std::memcmp(source + i, needle, needle_bytes) == 0) return true;
+    return false;
+}
+
+void append_d3d12_resource(std::ostringstream &out, ID3D12Resource *resource) {
+    if (!resource) return;
+    const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    out << " gpu_va=0x" << std::hex << resource->GetGPUVirtualAddress()
+        << " width=" << std::dec << desc.Width << " height=" << desc.Height
+        << " depth_or_layers=" << desc.DepthOrArraySize << " mips=" << desc.MipLevels
+        << " format=" << uint32_t(desc.Format) << " dimension=" << uint32_t(desc.Dimension);
+}
+
+bool prepare_d3d12_capture_fence() {
+    if (!g_d3d12_capture_device) return false;
+    if (!g_d3d12_capture_fence) {
+        if (FAILED(g_d3d12_capture_device->CreateFence(
+                0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_d3d12_capture_fence)))) return false;
+        g_d3d12_capture_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!g_d3d12_capture_event) {
+            g_d3d12_capture_fence->Release();
+            g_d3d12_capture_fence = nullptr;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool capture_d3d12_texture(ID3D12GraphicsCommandList *list,
+                           ID3D12Resource *source, const char *label) {
+    if (!env_enabled("DLSS5_D3D12_CAPTURE_NEURAL")) return false;
+    if (!list || !source) {
+        log([&] { return std::string("d3d12_capture_failed label=") + label + " reason=unresolved_source"; });
+        return false;
+    }
+    if (!prepare_d3d12_capture_fence()) {
+        log([&] { return std::string("d3d12_capture_failed label=") + label + " reason=fence"; });
+        return false;
+    }
+    const D3D12_RESOURCE_DESC source_desc = source->GetDesc();
+    if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        source_desc.Width == 0 || source_desc.Height == 0 ||
+        source_desc.Width > 4096 || source_desc.Height > 4096) return false;
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT rows = 0;
+    UINT64 row_size = 0;
+    UINT64 total_bytes = 0;
+    g_d3d12_capture_device->GetCopyableFootprints(
+        &source_desc, 0, 1, 0, &footprint, &rows, &row_size, &total_bytes);
+    if (total_bytes == 0 || total_bytes > 0x4000000 || row_size == 0) return false;
+
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = total_bytes;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource *readback = nullptr;
+    if (FAILED(g_d3d12_capture_device->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr, IID_PPV_ARGS(&readback)))) return false;
+
+    D3D12_RESOURCE_BARRIER to_copy{};
+    to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_copy.Transition.pResource = source;
+    to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &to_copy);
+
+    D3D12_TEXTURE_COPY_LOCATION destination{};
+    destination.pResource = readback;
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint = footprint;
+    D3D12_TEXTURE_COPY_LOCATION origin{};
+    origin.pResource = source;
+    origin.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    origin.SubresourceIndex = 0;
+    list->CopyTextureRegion(&destination, 0, 0, 0, &origin, nullptr);
+
+    D3D12_RESOURCE_BARRIER restore{};
+    restore.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    restore.Transition.pResource = source;
+    restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    restore.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &restore);
+
+    source->AddRef();
+    D3D12PendingTextureCapture pending;
+    pending.source = source;
+    pending.readback = readback;
+    pending.footprint = footprint;
+    pending.num_rows = rows;
+    pending.row_size = row_size;
+    pending.total_bytes = total_bytes;
+    pending.index = g_d3d12_capture_index++;
+    g_d3d12_pending_captures.push_back(pending);
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_capture_scheduled label=" << label << " resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(source) << " index=" << std::dec << pending.index
+          << " width=" << source_desc.Width << " height=" << source_desc.Height
+          << " row_pitch=" << footprint.Footprint.RowPitch << " bytes=" << total_bytes;
+        return s.str();
+    });
+    return true;
+}
+
+void flush_d3d12_texture_captures(ID3D12CommandQueue *queue) {
+    if (!queue || g_d3d12_pending_captures.empty() || !prepare_d3d12_capture_fence()) return;
+    const UINT64 fence_value = ++g_d3d12_capture_fence_value;
+    if (FAILED(queue->Signal(g_d3d12_capture_fence, fence_value))) return;
+    if (g_d3d12_capture_fence->GetCompletedValue() < fence_value) {
+        if (FAILED(g_d3d12_capture_fence->SetEventOnCompletion(fence_value, g_d3d12_capture_event))) return;
+        WaitForSingleObject(g_d3d12_capture_event, INFINITE);
+    }
+    for (D3D12PendingTextureCapture &pending : g_d3d12_pending_captures) {
+        void *mapped = nullptr;
+        D3D12_RANGE range{0, static_cast<SIZE_T>(pending.total_bytes)};
+        if (FAILED(pending.readback->Map(0, &range, &mapped)) || !mapped) continue;
+        std::vector<uint8_t> packed(static_cast<size_t>(pending.row_size) * pending.num_rows);
+        const auto *source = static_cast<const uint8_t *>(mapped);
+        for (UINT row = 0; row < pending.num_rows; ++row) {
+            std::memcpy(packed.data() + static_cast<size_t>(row) * pending.row_size,
+                        source + static_cast<size_t>(row) * pending.footprint.Footprint.RowPitch,
+                        static_cast<size_t>(pending.row_size));
+        }
+        pending.readback->Unmap(0, nullptr);
+        std::ostringstream name;
+        name << "dlss5_d3d12_capture_" << GetCurrentProcessId() << '_'
+             << pending.index << ".rgba16f.bin";
+        const bool written = write_runtime_binary(name.str(), packed.data(), packed.size());
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_capture_written resource=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(pending.source) << " bytes=" << std::dec
+              << packed.size() << " written=" << written << " file=" << name.str();
+            return s.str();
+        });
+    }
+    for (D3D12PendingTextureCapture &pending : g_d3d12_pending_captures) {
+        pending.source->Release();
+        pending.readback->Release();
+    }
+    g_d3d12_pending_captures.clear();
+}
+
+void shutdown_d3d12_texture_captures() {
+    for (D3D12PendingTextureCapture &pending : g_d3d12_pending_captures) {
+        pending.source->Release();
+        pending.readback->Release();
+    }
+    g_d3d12_pending_captures.clear();
+    if (g_d3d12_capture_event) {
+        CloseHandle(g_d3d12_capture_event);
+        g_d3d12_capture_event = nullptr;
+    }
+    if (g_d3d12_capture_fence) {
+        g_d3d12_capture_fence->Release();
+        g_d3d12_capture_fence = nullptr;
+    }
+    if (g_d3d12_capture_device) {
+        g_d3d12_capture_device->Release();
+        g_d3d12_capture_device = nullptr;
+    }
+}
 struct DarkTableProxy {
     void *original = nullptr;
     void *replacement = nullptr;
@@ -419,17 +732,45 @@ bool write_runtime_binary(const std::string &file_name, const void *data, size_t
 }
 
 void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z) {
+    ID3D12PipelineState *pipeline = nullptr;
+    bool neural_pipeline = false;
+    D3D12_GPU_DESCRIPTOR_HANDLE root0{};
+    D3D12_GPU_DESCRIPTOR_HANDLE root1{};
+    {
+        std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+        const auto found = g_d3d12_command_lists.find(list);
+        if (found != g_d3d12_command_lists.end()) {
+            pipeline = found->second.pipeline;
+            root0 = found->second.root_tables[0];
+            root1 = found->second.root_tables[1];
+        }
+        const auto neural = g_d3d12_neural_psos.find(pipeline);
+        neural_pipeline = neural != g_d3d12_neural_psos.end() && neural->second;
+    }
+    const std::string root0_resources = resolve_d3d12_gpu_table(root0);
+    const std::string root1_resources = resolve_d3d12_gpu_table(root1);
     log([&] {
         std::ostringstream s;
         s << "d3d12_dispatch list=0x" << std::hex << reinterpret_cast<uintptr_t>(list)
-          << " groups=" << std::dec << x << ',' << y << ',' << z;
+          << " pipeline=0x" << reinterpret_cast<uintptr_t>(pipeline)
+          << " neural=" << neural_pipeline
+          << " groups=" << std::dec << x << ',' << y << ',' << z
+          << " root0=" << root0_resources << " root1=" << root1_resources;
         return s.str();
     });
     if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
+    if (neural_pipeline) {
+        capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 0), "root0_descriptor0");
+        capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 1), "root0_descriptor1");
+    }
 }
 
 void STDMETHODCALLTYPE hook_d3d12_set_pipeline_state(ID3D12GraphicsCommandList *list,
                                                       ID3D12PipelineState *pipeline) {
+    {
+        std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+        g_d3d12_command_lists[list].pipeline = pipeline;
+    }
     log([&] {
         std::ostringstream s;
         s << "d3d12_set_pipeline_state list=0x" << std::hex << reinterpret_cast<uintptr_t>(list)
@@ -453,6 +794,10 @@ void STDMETHODCALLTYPE hook_d3d12_set_compute_root_signature(ID3D12GraphicsComma
 
 void STDMETHODCALLTYPE hook_d3d12_set_compute_root_descriptor_table(
     ID3D12GraphicsCommandList *list, UINT index, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+    {
+        std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+        g_d3d12_command_lists[list].root_tables[index] = handle;
+    }
     log([&] {
         std::ostringstream s;
         s << "d3d12_set_compute_root_descriptor_table list=0x" << std::hex
@@ -464,18 +809,42 @@ void STDMETHODCALLTYPE hook_d3d12_set_compute_root_descriptor_table(
         g_d3d12_set_compute_root_descriptor_table(list, index, handle);
 }
 
+void STDMETHODCALLTYPE hook_d3d12_set_compute_root_32bit_constants(
+    ID3D12GraphicsCommandList *list, UINT index, UINT count,
+    const void *values, UINT destination_offset) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_set_compute_root_32bit_constants list=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(list) << " index=" << std::dec << index
+          << " count=" << count << " destination_offset=" << destination_offset
+          << " values=";
+        const auto *words = static_cast<const uint32_t *>(values);
+        for (UINT i = 0; words && i < std::min<UINT>(count, 64); ++i)
+            s << "0x" << std::hex << words[i] << ',';
+        return s.str();
+    });
+    if (g_d3d12_set_compute_root_32bit_constants)
+        g_d3d12_set_compute_root_32bit_constants(list, index, count, values, destination_offset);
+}
+
 HRESULT STDMETHODCALLTYPE hook_d3d12_create_compute_pipeline_state(
     ID3D12Device *device, const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc,
     REFIID riid, void **result) {
     const size_t shader_bytes = desc ? static_cast<size_t>(desc->CS.BytecodeLength) : 0;
     const void *shader = desc ? desc->CS.pShaderBytecode : nullptr;
     const unsigned int index = g_d3d12_pso_index++;
+    const bool neural_shader = contains_ascii(shader, shader_bytes, "Neural");
     std::ostringstream name;
     name << "dlss5_d3d12_cs_" << GetCurrentProcessId() << '_' << index << ".dxil";
     const bool dumped = write_runtime_binary(name.str(), shader, shader_bytes);
     const HRESULT hr = g_d3d12_create_compute_pipeline_state
         ? g_d3d12_create_compute_pipeline_state(device, desc, riid, result)
         : E_FAIL;
+    if (SUCCEEDED(hr) && result && *result)
+        {
+            std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+            g_d3d12_neural_psos[reinterpret_cast<ID3D12PipelineState *>(*result)] = neural_shader;
+        }
     log([&] {
         std::ostringstream s;
         s << "d3d12_create_compute_pso device=0x" << std::hex
@@ -485,10 +854,18 @@ HRESULT STDMETHODCALLTYPE hook_d3d12_create_compute_pipeline_state(
           << " root_signature=0x" << (desc ? reinterpret_cast<uintptr_t>(desc->pRootSignature) : 0)
           << " cs=0x" << reinterpret_cast<uintptr_t>(shader)
           << " cs_bytes=" << std::dec << shader_bytes << " dumped=" << dumped
+          << " neural=" << neural_shader
           << " file=" << name.str();
         return s.str();
     });
     return hr;
+}
+
+void STDMETHODCALLTYPE hook_d3d12_execute_command_lists(
+    ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists) {
+    if (g_d3d12_execute_command_lists)
+        g_d3d12_execute_command_lists(queue, count, lists);
+    if (env_enabled("DLSS5_D3D12_CAPTURE_NEURAL")) flush_d3d12_texture_captures(queue);
 }
 
 HRESULT STDMETHODCALLTYPE hook_d3d12_create_descriptor_heap(
@@ -502,6 +879,16 @@ HRESULT STDMETHODCALLTYPE hook_d3d12_create_descriptor_heap(
         const D3D12_CPU_DESCRIPTOR_HANDLE cpu = heap->GetCPUDescriptorHandleForHeapStart();
         const D3D12_GPU_DESCRIPTOR_HANDLE gpu = heap->GetGPUDescriptorHandleForHeapStart();
         const UINT increment = device->GetDescriptorHandleIncrementSize(desc->Type);
+        {
+            std::lock_guard<std::mutex> lock(g_d3d12_trace_mutex);
+            D3D12DescriptorHeapTrace trace;
+            trace.heap = heap;
+            trace.desc = *desc;
+            trace.cpu_start = cpu;
+            trace.gpu_start = gpu;
+            trace.increment = increment;
+            g_d3d12_heaps.push_back(std::move(trace));
+        }
         log([&] {
             std::ostringstream s;
             s << "d3d12_create_descriptor_heap heap=0x" << std::hex
@@ -518,10 +905,12 @@ HRESULT STDMETHODCALLTYPE hook_d3d12_create_descriptor_heap(
 void STDMETHODCALLTYPE hook_d3d12_create_shader_resource_view(
     ID3D12Device *device, ID3D12Resource *resource,
     const D3D12_SHADER_RESOURCE_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    remember_d3d12_cpu_descriptor(handle, resource);
     log([&] {
         std::ostringstream s;
         s << "d3d12_create_srv resource=0x" << std::hex << reinterpret_cast<uintptr_t>(resource)
           << " cpu_handle=0x" << handle.ptr;
+        append_d3d12_resource(s, resource);
         if (desc) s << " format=" << std::dec << uint32_t(desc->Format)
                     << " dimension=" << uint32_t(desc->ViewDimension);
         return s.str();
@@ -533,17 +922,88 @@ void STDMETHODCALLTYPE hook_d3d12_create_shader_resource_view(
 void STDMETHODCALLTYPE hook_d3d12_create_unordered_access_view(
     ID3D12Device *device, ID3D12Resource *resource, ID3D12Resource *counter,
     const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    remember_d3d12_cpu_descriptor(handle, resource);
     log([&] {
         std::ostringstream s;
         s << "d3d12_create_uav resource=0x" << std::hex << reinterpret_cast<uintptr_t>(resource)
           << " counter=0x" << reinterpret_cast<uintptr_t>(counter)
           << " cpu_handle=0x" << handle.ptr;
+        append_d3d12_resource(s, resource);
         if (desc) s << " format=" << std::dec << uint32_t(desc->Format)
                     << " dimension=" << uint32_t(desc->ViewDimension);
         return s.str();
     });
     if (g_d3d12_create_unordered_access_view)
         g_d3d12_create_unordered_access_view(device, resource, counter, desc, handle);
+}
+
+void STDMETHODCALLTYPE hook_d3d12_copy_descriptors(
+    ID3D12Device *device, UINT destination_range_count,
+    const D3D12_CPU_DESCRIPTOR_HANDLE *destination_ranges,
+    const UINT *destination_sizes, UINT source_range_count,
+    const D3D12_CPU_DESCRIPTOR_HANDLE *source_ranges,
+    const UINT *source_sizes, D3D12_DESCRIPTOR_HEAP_TYPE type) {
+    if (g_d3d12_copy_descriptors)
+        g_d3d12_copy_descriptors(device, destination_range_count, destination_ranges,
+                                 destination_sizes, source_range_count, source_ranges,
+                                 source_sizes, type);
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_copy_descriptors type=" << std::dec << uint32_t(type)
+          << " destination_ranges=" << destination_range_count
+          << " source_ranges=" << source_range_count;
+        if (destination_ranges && destination_range_count)
+            s << " destination=0x" << std::hex << destination_ranges[0].ptr;
+        if (source_ranges && source_range_count)
+            s << " source=0x" << std::hex << source_ranges[0].ptr;
+        return s.str();
+    });
+    if (!destination_ranges || !source_ranges || !destination_sizes || !source_sizes) return;
+    UINT destination_range = 0, source_range = 0;
+    UINT destination_offset = 0, source_offset = 0;
+    while (destination_range < destination_range_count && source_range < source_range_count) {
+        const UINT destination_remaining = destination_sizes[destination_range] - destination_offset;
+        const UINT source_remaining = source_sizes[source_range] - source_offset;
+        const UINT count = std::min(destination_remaining, source_remaining);
+        for (UINT i = 0; i < count; ++i) {
+            D3D12_CPU_DESCRIPTOR_HANDLE destination = destination_ranges[destination_range];
+            D3D12_CPU_DESCRIPTOR_HANDLE source = source_ranges[source_range];
+            destination.ptr += static_cast<SIZE_T>(destination_offset + i) * 32;
+            source.ptr += static_cast<SIZE_T>(source_offset + i) * 32;
+            copy_d3d12_descriptor(destination, source, type);
+        }
+        destination_offset += count;
+        source_offset += count;
+        if (destination_offset == destination_sizes[destination_range]) {
+            ++destination_range;
+            destination_offset = 0;
+        }
+        if (source_offset == source_sizes[source_range]) {
+            ++source_range;
+            source_offset = 0;
+        }
+    }
+}
+
+void STDMETHODCALLTYPE hook_d3d12_copy_descriptors_simple(
+    ID3D12Device *device, UINT count, D3D12_CPU_DESCRIPTOR_HANDLE destination,
+    D3D12_CPU_DESCRIPTOR_HANDLE source, D3D12_DESCRIPTOR_HEAP_TYPE type) {
+    if (g_d3d12_copy_descriptors_simple)
+        g_d3d12_copy_descriptors_simple(device, count, destination, source, type);
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_copy_descriptors_simple type=" << std::dec << uint32_t(type)
+          << " count=" << count << " destination=0x" << std::hex << destination.ptr
+          << " source=0x" << source.ptr;
+        return s.str();
+    });
+    for (UINT i = 0; i < count; ++i) {
+        D3D12_CPU_DESCRIPTOR_HANDLE destination_i = destination;
+        D3D12_CPU_DESCRIPTOR_HANDLE source_i = source;
+        destination_i.ptr += static_cast<SIZE_T>(i) * 32;
+        source_i.ptr += static_cast<SIZE_T>(i) * 32;
+        copy_d3d12_descriptor(destination_i, source_i, type);
+    }
 }
 
 void install_d3d12_command_list_hooks(command_list *cmd_list) {
@@ -566,6 +1026,9 @@ void install_d3d12_command_list_hooks(command_list *cmd_list) {
         {31, "SetComputeRootDescriptorTable",
          reinterpret_cast<void *>(&hook_d3d12_set_compute_root_descriptor_table),
          reinterpret_cast<void **>(&g_d3d12_set_compute_root_descriptor_table)},
+        {35, "SetComputeRoot32BitConstants",
+         reinterpret_cast<void *>(&hook_d3d12_set_compute_root_32bit_constants),
+         reinterpret_cast<void **>(&g_d3d12_set_compute_root_32bit_constants)},
     };
     for (const Method &method : methods) {
         if (!vtable[method.index]) continue;
@@ -593,6 +1056,10 @@ void install_d3d12_device_hooks(device *dev) {
     if (!dev || dev->get_api() != device_api::d3d12) return;
     auto *native = reinterpret_cast<ID3D12Device *>(dev->get_native());
     if (!native) return;
+    if (!g_d3d12_capture_device) {
+        native->AddRef();
+        g_d3d12_capture_device = native;
+    }
     auto **vtable = *reinterpret_cast<void ***>(native);
     struct Method {
         size_t index;
@@ -608,6 +1075,10 @@ void install_d3d12_device_hooks(device *dev) {
          reinterpret_cast<void **>(&g_d3d12_create_shader_resource_view)},
         {19, "CreateUnorderedAccessView", reinterpret_cast<void *>(&hook_d3d12_create_unordered_access_view),
          reinterpret_cast<void **>(&g_d3d12_create_unordered_access_view)},
+        {23, "CopyDescriptors", reinterpret_cast<void *>(&hook_d3d12_copy_descriptors),
+         reinterpret_cast<void **>(&g_d3d12_copy_descriptors)},
+        {24, "CopyDescriptorsSimple", reinterpret_cast<void *>(&hook_d3d12_copy_descriptors_simple),
+         reinterpret_cast<void **>(&g_d3d12_copy_descriptors_simple)},
     };
     for (const Method &method : methods) {
         if (!vtable[method.index]) continue;
@@ -628,6 +1099,34 @@ void install_d3d12_device_hooks(device *dev) {
                 return s.str();
             });
         }
+    }
+}
+
+void install_d3d12_queue_hooks(command_queue *queue) {
+    if (!queue || queue->get_device()->get_api() != device_api::d3d12) return;
+    auto *native = reinterpret_cast<ID3D12CommandQueue *>(queue->get_native());
+    if (!native) return;
+    auto **vtable = *reinterpret_cast<void ***>(native);
+    constexpr size_t kExecuteCommandListsIndex = 10;
+    if (!vtable[kExecuteCommandListsIndex]) return;
+    const MH_STATUS status = MH_CreateHook(
+        vtable[kExecuteCommandListsIndex],
+        reinterpret_cast<void *>(&hook_d3d12_execute_command_lists),
+        reinterpret_cast<LPVOID *>(&g_d3d12_execute_command_lists));
+    if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
+        MH_EnableHook(vtable[kExecuteCommandListsIndex]);
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_hook_installed name=ExecuteCommandLists target=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(vtable[kExecuteCommandListsIndex]);
+            return s.str();
+        });
+    } else {
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_hook_failed name=ExecuteCommandLists status=" << std::dec << int(status);
+            return s.str();
+        });
     }
 }
 
@@ -1035,6 +1534,16 @@ void on_init_command_list(command_list *cmd_list) {
     });
 }
 
+void on_init_command_queue(command_queue *queue) {
+    install_d3d12_queue_hooks(queue);
+    log([&] {
+        std::ostringstream s;
+        s << "init_command_queue native=0x" << std::hex
+          << (queue ? queue->get_native() : 0);
+        return s.str();
+    });
+}
+
 void on_init_resource(device *dev, const resource_desc &desc,
                       const subresource_data *, resource_usage initial_state,
                       resource resource_handle) {
@@ -1196,6 +1705,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         });
         reshade::register_event<reshade::addon_event::init_device>(on_init_device);
         reshade::register_event<reshade::addon_event::init_command_list>(on_init_command_list);
+        reshade::register_event<reshade::addon_event::init_command_queue>(on_init_command_queue);
         reshade::register_event<reshade::addon_event::init_resource>(on_init_resource);
         reshade::register_event<reshade::addon_event::init_resource_view>(on_init_resource_view);
         reshade::register_event<reshade::addon_event::init_pipeline_layout>(on_init_pipeline_layout);
@@ -1209,6 +1719,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(on_reshade_finish_effects);
     } else if (reason == DLL_PROCESS_DETACH) {
         dump_dark_records();
+        shutdown_d3d12_texture_captures();
         close_dark_trace();
         reshade::unregister_addon(hModule);
         std::lock_guard<std::mutex> lock(g_mutex);
