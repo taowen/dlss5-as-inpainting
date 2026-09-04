@@ -1,0 +1,6 @@
+[submodule "third_party/DLSS5-Image-Converter"]
+	path = third_party/DLSS5-Image-Converter
+	url = https://github.com/criso2hd-alt/DLSS5-Image-Converter.git
+[submodule "third_party/NVIDIA-DLSS"]
+	path = third_party/NVIDIA-DLSS
+	url = https://github.com/NVIDIA/DLSS.git

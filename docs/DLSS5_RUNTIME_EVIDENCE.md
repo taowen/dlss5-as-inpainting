@@ -113,5 +113,21 @@ The 2026-09-04 run of this fixed contract reported history MAE/RMSE
 The raw frames and manifest are ignored local evidence; the harness and all
 runtime DLLs remain external.
 
+## Source dependencies
+
+The working native harness and the public NVIDIA SDK are now tracked as git
+submodules rather than copied into this repository:
+
+```powershell
+git submodule update --init --recursive
+powershell -ExecutionPolicy Bypass -File tools\build_dlss5_native.ps1
+```
+
+The build script links the harness against `third_party/NVIDIA-DLSS` and keeps
+the source-available harness at its upstream revision. It does not stage or
+redistribute `nvngx_dlss.dll`, `nvngx_dlssnr.dll`, ReShade, or the RenoDX add-on;
+those runtime files must be supplied locally. The checked-in `bin/nvngx_dlssnr.dll`
+is the pinned model already used by this project.
+
 The temporary build, SDK headers, and locally staged runtime are outside this
 repository. NVIDIA runtime files and third-party binaries are not committed.

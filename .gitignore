@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.obj
 tools/*.exe
+.native-build/
 
 # Reproducible local extraction/export and runtime evidence artifacts.
 DLSS5-extracted/
