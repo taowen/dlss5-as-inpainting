@@ -114,3 +114,37 @@ result therefore says that this D3D12/NGX carrier is not exposing DLSS5's
 runtime work as CUPTI CUDA modules, not that the capture implementation is
 broken. The capture remains a verified CUDA-client probe and a template for a
 future in-process graphics/driver capture route.
+
+## Embedded CUBIN extraction and live patch
+
+The earlier ELF-only search was incomplete. The current `nvngx_dlssnr.dll`
+contains 15 `50 ED 55 BA` bundle headers. Each bundle contains four
+concatenated Zstandard frames; the first four decode to sm_75, sm_86, sm_89,
+and sm_120 ELF CUBINs. `tools/extract_dlss5_embedded_cubins.py` extracts all
+68 Zstandard frames, of which 60 are CUBINs, and compares their hashes with
+the loose files in `cubins/`. On the local DLL all 60 CUBIN hashes match.
+
+The Zstandard frame parameters are reproducible with level 5,
+`write_content_size=True`, `write_checksum=False`, and `write_dict_id=False`.
+That makes same-length in-place experiments possible. For example:
+
+```powershell
+python tools\patch_dlss5_embedded_cubin.py bin\nvngx_dlssnr.dll `
+  --bundle 0 --gpu sm_120 --cubin-offset 0x1a15a7 --byte-value 0x00 `
+  --output runtime_probe_output\nvngx_dlssnr_seed_patch.dll
+```
+
+This changes the pre-kernel seed multiplier from `-0x72594cbd` to `0xa6b343`
+at SASS address `0x03a0`, keeps the compressed frame at `512,316` bytes, and
+keeps the DLL size unchanged. The patched DLL was placed in an isolated native
+runtime and executed on the RTX 5080 at 256². The patched-vs-baseline native
+isolated output changed with MAE `0.0062039`, RMSE `0.0102768`, and
+`155,199/262,144` half elements above `1e-3`; the history output changed with
+MAE `0.0050361` and `168,610/262,144` elements above `1e-3`. This is the first
+dynamic causal proof that a modification inside the actual DLSS5 pre CUBIN
+changes the neural output.
+
+The patch is intentionally not installed into `bin/` and does not claim to
+recover the front feature tensor. The next safe experiments are same-length
+patches to the pre `TEX` coordinate/math path, followed by output A/B runs;
+the extractor and patcher now provide the required reversible boundary.
