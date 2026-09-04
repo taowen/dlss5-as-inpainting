@@ -43,6 +43,10 @@ DISPATCH_RE = re.compile(r"d3d12_dispatch .* neural=(\d+)")
 CAPTURE_SCHEDULE_RE = re.compile(
     r"d3d12_capture_scheduled label=([^ ]+) .* index=(\d+)"
 )
+BUFFER_SCHEDULE_RE = re.compile(
+    r"d3d12_buffer_capture_scheduled label=([^ ]+) .* index=(\d+)"
+)
+BUFFER_FILE_RE = re.compile(r"dlss5_d3d12_driver_buffer_\d+_(\d+)\.bin$")
 MUTATIONS: tuple[dict[str, str], ...] = (
     {
         "name": "coord_fadd_half_to_zero",
@@ -272,6 +276,32 @@ def difference(left: list[float], right: list[float]) -> dict[str, float | int]:
     }
 
 
+def binary_difference(left: Path, right: Path) -> dict[str, int | str | None]:
+    """Compare raw payloads without interpreting a private tensor layout."""
+    a = left.read_bytes()
+    b = right.read_bytes()
+    if len(a) != len(b):
+        raise ValueError(f"cannot compare buffers with different lengths: {left} {right}")
+    changed = 0
+    first_changed = None
+    last_changed = None
+    for index, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            changed += 1
+            if first_changed is None:
+                first_changed = index
+            last_changed = index
+    return {
+        "left_sha256": hashlib.sha256(a).hexdigest(),
+        "right_sha256": hashlib.sha256(b).hexdigest(),
+        "bytes": len(a),
+        "byte_equal": changed == 0,
+        "changed_bytes": changed,
+        "first_changed": first_changed,
+        "last_changed": last_changed,
+    }
+
+
 def copy_runtime(template: Path, destination: Path, harness: Path, addon: Path, dll: Path) -> None:
     if destination.exists():
         raise RuntimeError(f"refusing to overwrite existing case runtime: {destination}")
@@ -487,7 +517,11 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_BEFORE_NEURAL"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_BEFORE_NEURAL", None)
-        if args.capture_driver_buffers or args.capture_driver_buffers_all:
+        if (
+            args.capture_driver_buffers
+            or args.capture_driver_buffers_all
+            or args.capture_driver_buffers_all_dispatches
+        ):
             env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS", None)
@@ -495,6 +529,10 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL", None)
+        if args.capture_driver_buffers_all_dispatches:
+            env["DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL_DISPATCHES"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL_DISPATCHES", None)
         env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
         for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
@@ -526,7 +564,18 @@ def run_case(
         ) = capture_pair(
             runtime, args.width, args.height, args.capture_all_neural
         )
-        driver_buffers = sorted(runtime.glob("dlss5_d3d12_driver_buffer_*.bin"))
+        driver_buffers = sorted(
+            runtime.glob("dlss5_d3d12_driver_buffer_*.bin"),
+            key=lambda path: int(BUFFER_FILE_RE.fullmatch(path.name).group(1)),
+        )
+        driver_buffer_layout: dict[int, str] = {}
+        capture_log = runtime / "dlss5_reshade_capture.log"
+        if capture_log.exists():
+            for line in capture_log.read_text(encoding="utf-8", errors="replace").splitlines():
+                scheduled = BUFFER_SCHEDULE_RE.search(line)
+                if scheduled:
+                    label, index = scheduled.groups()
+                    driver_buffer_layout[int(index)] = label
         result.update(
             {
                 "status": "ok",
@@ -539,6 +588,10 @@ def run_case(
                 "final_texture_capture": str(final_texture) if final_texture else None,
                 "before_neural_capture": str(before_neural) if before_neural else None,
                 "driver_buffers": [str(path) for path in driver_buffers],
+                "driver_buffer_layout": [
+                    {"path": str(path), "label": driver_buffer_layout.get(int(path.stem.rsplit("_", 1)[-1]), "unknown")}
+                    for path in driver_buffers
+                ],
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
                 "original_summary": summary(read_rgba16f(original_path, args.width, args.height)),
                 "neural_summary": summary(read_rgba16f(neural_path, args.width, args.height)),
@@ -546,6 +599,18 @@ def run_case(
                     "final": hashlib.sha256(output.read_bytes()).hexdigest(),
                     "original_capture": hashlib.sha256(original_path.read_bytes()).hexdigest(),
                     "neural_capture": hashlib.sha256(neural_path.read_bytes()).hexdigest(),
+                    "hidden_neural_capture": (
+                        hashlib.sha256(hidden_neural.read_bytes()).hexdigest()
+                        if hidden_neural else None
+                    ),
+                    "final_texture_capture": (
+                        hashlib.sha256(final_texture.read_bytes()).hexdigest()
+                        if final_texture else None
+                    ),
+                    "before_neural_capture": (
+                        hashlib.sha256(before_neural.read_bytes()).hexdigest()
+                        if before_neural else None
+                    ),
                 },
             }
         )
@@ -591,6 +656,11 @@ def main() -> int:
         "--capture-driver-buffers-all",
         action="store_true",
         help="capture every driver-owned UAV between 1 MiB and 64 MiB",
+    )
+    parser.add_argument(
+        "--capture-driver-buffers-all-dispatches",
+        action="store_true",
+        help="also snapshot the tracked arena after each Original dispatch",
     )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
@@ -662,6 +732,23 @@ def main() -> int:
                     for values, baseline_values in zip(capture_values, baseline_captures)
                 ],
             }
+            raw_pairs = (
+                ("final", "final"),
+                ("original_capture", "original_capture"),
+                ("neural_capture", "neural_capture"),
+                ("hidden_neural_capture", "hidden_neural_capture"),
+                ("final_texture_capture", "final_texture_capture"),
+                ("before_neural_capture", "before_neural_capture"),
+            )
+            report["diff_vs_baseline"]["raw_bytes"] = {
+                report_key: binary_difference(Path(baseline[baseline_key]), Path(report[report_key]))
+                for report_key, baseline_key in raw_pairs
+                if baseline.get(baseline_key) and report.get(report_key)
+            }
+            report["bit_exact_vs_baseline"] = all(
+                item["byte_equal"]
+                for item in report["diff_vs_baseline"]["raw_bytes"].values()
+            )
             if baseline_hidden is not None and report["hidden_neural_capture"]:
                 report["diff_vs_baseline"]["hidden_neural_capture"] = difference(
                     read_rgba16f(Path(report["hidden_neural_capture"]), args.width, args.height),
@@ -677,6 +764,25 @@ def main() -> int:
                     read_rgba16f(Path(report["before_neural_capture"]), args.width, args.height),
                     baseline_before_neural,
                 )
+            baseline_buffers = baseline.get("driver_buffer_layout", [])
+            report_buffers = report.get("driver_buffer_layout", [])
+            if baseline_buffers and report_buffers:
+                if len(baseline_buffers) != len(report_buffers):
+                    raise RuntimeError(
+                        f"driver buffer capture count changed for {report['name']}: "
+                        f"{len(report_buffers)} != {len(baseline_buffers)}"
+                    )
+                report["diff_vs_baseline"]["driver_buffers"] = [
+                    {
+                        "label": right.get("label", "unknown"),
+                        **binary_difference(Path(left["path"]), Path(right["path"])),
+                    }
+                    for left, right in zip(baseline_buffers, report_buffers)
+                ]
+                report["bit_exact_vs_baseline"] = report["bit_exact_vs_baseline"] and all(
+                    item["byte_equal"]
+                    for item in report["diff_vs_baseline"]["driver_buffers"]
+                )
 
     output = run_root / "report.json"
     output.write_text(
@@ -691,6 +797,7 @@ def main() -> int:
                 "capture_before_neural": args.capture_before_neural,
                 "capture_driver_buffers": args.capture_driver_buffers,
                 "capture_driver_buffers_all": args.capture_driver_buffers_all,
+                "capture_driver_buffers_all_dispatches": args.capture_driver_buffers_all_dispatches,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

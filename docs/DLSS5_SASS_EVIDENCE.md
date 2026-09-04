@@ -227,6 +227,22 @@ This is the first raw workspace capture associated with the private CUBIN
 submission. Its internal tensor layout is still to be decoded before it can be
 used as a PyTorch input or exact intermediate.
 
+The capture hook now supports `--capture-driver-buffers-all-dispatches`, which
+records the same arena immediately after each Original dispatch and immediately
+before each Neural dispatch. On the RTX 5080, the coordinate mutation produced
+six ordered snapshots for the three temporal passes: all three `after_original`
+snapshots and the first two `before_neural` snapshots were byte-identical to the
+baseline, while only the third `before_neural` snapshot changed. That final
+snapshot changed exactly 9,278,345 bytes, from `0x16c0c` through the end of the
+15,711,232-byte resource. This separates the mutation's first observable effect
+from the D3D12 Neural consumer and is now recorded as raw-byte SHA-256 plus
+changed-range metadata in `report.json`.
+
+The same run logs every committed D3D12 buffer creation. The only tracked
+driver-owned arena remains GPU VA `0x1ba00000`, size `0xefbc00`, with UAV flags;
+the other 15.7 MiB buffers appearing in the log are the readback resources
+created by the capture hook itself (COPY_DEST, distinct GPU virtual addresses).
+
 Component-level masks provide an additional lane constraint. With the same
 carrier and temporal sequence, masking each TEX to two components produced:
 

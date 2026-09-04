@@ -162,13 +162,13 @@ or command-buffer payload.
 
 ## Remaining capture work
 
-The current recorder stores first/latest snapshots and can dump pointed CUBIN
-containers. The optional D3D12 readback exposes the live Neural image, but not
-the driver-owned pre-front tensor or its internal command description. The
-D3D12 evidence proves the visible carrier composition pass; the private table
-evidence proves the lower driver boundary. The remaining blocker for a
-bit-exact PyTorch model is the missing pre-front tensor producer and its driver
-resource bindings. The previous direct
+The current recorder stores ordered per-dispatch snapshots and can dump pointed
+CUBIN containers. The optional D3D12 readback exposes the live Neural image and
+the exact 15,711,232-byte driver-owned arena before Neural dispatch, but not the
+arena's tensor layout or its internal command description. The D3D12 evidence
+proves the visible carrier composition pass; the private table evidence proves
+the lower driver boundary. The remaining blocker for a bit-exact PyTorch model
+is the missing pre-front tensor producer and its driver resource bindings. The previous direct
 `STS -> STG` mutation had no valid driver binding and correctly resulted in a
 device hang, so the next safe step is to decode the high-frequency private
 slot structures/resource handles rather than mutate another store.

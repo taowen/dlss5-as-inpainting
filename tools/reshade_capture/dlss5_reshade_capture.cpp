@@ -66,6 +66,10 @@ using D3D12CreateShaderResourceViewFn = void(STDMETHODCALLTYPE *)(
     ID3D12Device *, ID3D12Resource *, const D3D12_SHADER_RESOURCE_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
 using D3D12CreateUnorderedAccessViewFn = void(STDMETHODCALLTYPE *)(
     ID3D12Device *, ID3D12Resource *, ID3D12Resource *, const D3D12_UNORDERED_ACCESS_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
+using D3D12CreateCommittedResourceFn = HRESULT(STDMETHODCALLTYPE *)(
+    ID3D12Device *, const D3D12_HEAP_PROPERTIES *, D3D12_HEAP_FLAGS,
+    const D3D12_RESOURCE_DESC *, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *,
+    REFIID, void **);
 using D3D12CopyDescriptorsFn = void(STDMETHODCALLTYPE *)(
     ID3D12Device *, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *,
     UINT, const D3D12_CPU_DESCRIPTOR_HANDLE *, const UINT *, D3D12_DESCRIPTOR_HEAP_TYPE);
@@ -87,6 +91,7 @@ D3D12CreateComputePipelineStateFn g_d3d12_create_compute_pipeline_state = nullpt
 D3D12CreateDescriptorHeapFn g_d3d12_create_descriptor_heap = nullptr;
 D3D12CreateShaderResourceViewFn g_d3d12_create_shader_resource_view = nullptr;
 D3D12CreateUnorderedAccessViewFn g_d3d12_create_unordered_access_view = nullptr;
+D3D12CreateCommittedResourceFn g_d3d12_create_committed_resource = nullptr;
 D3D12CopyDescriptorsFn g_d3d12_copy_descriptors = nullptr;
 D3D12CopyDescriptorsSimpleFn g_d3d12_copy_descriptors_simple = nullptr;
 unsigned int g_d3d12_pso_index = 0;
@@ -123,6 +128,7 @@ struct D3D12PendingBufferCapture {
     ID3D12Resource *readback = nullptr;
     UINT64 bytes = 0;
     unsigned int index = 0;
+    std::string label;
 };
 std::vector<D3D12PendingBufferCapture> g_d3d12_pending_buffer_captures;
 std::vector<ID3D12Resource *> g_d3d12_driver_buffer_candidates;
@@ -360,7 +366,7 @@ void remember_d3d12_driver_buffer(ID3D12Resource *resource) {
     });
 }
 
-bool capture_d3d12_driver_buffers(ID3D12GraphicsCommandList *list) {
+bool capture_d3d12_driver_buffers(ID3D12GraphicsCommandList *list, const char *label) {
     if (!env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS")) return false;
     std::vector<ID3D12Resource *> candidates;
     {
@@ -404,13 +410,14 @@ bool capture_d3d12_driver_buffers(ID3D12GraphicsCommandList *list) {
 
         source->AddRef();
         g_d3d12_pending_buffer_captures.push_back({
-            source, readback, source_desc.Width, g_d3d12_capture_index++});
+            source, readback, source_desc.Width, g_d3d12_capture_index++, label ? label : "unknown"});
         log([&] {
             std::ostringstream s;
-            s << "d3d12_buffer_capture_scheduled resource=0x" << std::hex
+            s << "d3d12_buffer_capture_scheduled label=" << (label ? label : "unknown")
+              << " resource=0x" << std::hex
               << reinterpret_cast<uintptr_t>(source) << " gpu_va=0x"
               << source->GetGPUVirtualAddress() << " bytes=" << std::dec
-              << source_desc.Width << " index=" << g_d3d12_pending_buffer_captures.back().index;
+             << source_desc.Width << " index=" << g_d3d12_pending_buffer_captures.back().index;
             return s.str();
         });
         captured = true;
@@ -467,6 +474,7 @@ void flush_d3d12_texture_captures(ID3D12CommandQueue *queue) {
             s << "d3d12_buffer_capture_written resource=0x" << std::hex
               << reinterpret_cast<uintptr_t>(pending.source) << " bytes=" << std::dec
               << bytes.size() << " written=" << written << " file=" << name.str();
+            s << " label=" << pending.label;
             return s.str();
         });
     }
@@ -944,9 +952,11 @@ void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT
             list,
             resolve_d3d12_gpu_descriptor(root0, 2),
             "before_neural_root0_descriptor2");
-        capture_d3d12_driver_buffers(list);
+        capture_d3d12_driver_buffers(list, "before_neural");
     }
     if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
+    if (!neural_pipeline && env_enabled("DLSS5_D3D12_CAPTURE_DRIVER_BUFFERS_ALL_DISPATCHES"))
+        capture_d3d12_driver_buffers(list, "after_original");
     if (neural_pipeline || env_enabled("DLSS5_D3D12_CAPTURE_ALL_DISPATCHES")) {
         if (env_enabled("DLSS5_D3D12_CAPTURE_ALL_NEURAL")) {
             for (size_t i = 0; i < 8; ++i) {
@@ -1143,6 +1153,31 @@ void STDMETHODCALLTYPE hook_d3d12_create_unordered_access_view(
         g_d3d12_create_unordered_access_view(device, resource, counter, desc, handle);
 }
 
+HRESULT STDMETHODCALLTYPE hook_d3d12_create_committed_resource(
+    ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heap_properties,
+    D3D12_HEAP_FLAGS heap_flags, const D3D12_RESOURCE_DESC *desc,
+    D3D12_RESOURCE_STATES initial_state, const D3D12_CLEAR_VALUE *clear_value,
+    REFIID riid, void **result) {
+    const HRESULT hr = g_d3d12_create_committed_resource
+        ? g_d3d12_create_committed_resource(device, heap_properties, heap_flags, desc,
+                                            initial_state, clear_value, riid, result)
+        : E_FAIL;
+    if (SUCCEEDED(hr) && result && *result && desc &&
+        desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+        auto *resource = reinterpret_cast<ID3D12Resource *>(*result);
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_create_committed_buffer resource=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(resource) << " gpu_va=0x"
+              << resource->GetGPUVirtualAddress() << " bytes=" << std::dec
+              << desc->Width << " flags=0x" << std::hex << uint32_t(desc->Flags)
+              << " initial_state=0x" << uint32_t(initial_state);
+            return s.str();
+        });
+    }
+    return hr;
+}
+
 void STDMETHODCALLTYPE hook_d3d12_copy_descriptors(
     ID3D12Device *device, UINT destination_range_count,
     const D3D12_CPU_DESCRIPTOR_HANDLE *destination_ranges,
@@ -1281,6 +1316,8 @@ void install_d3d12_device_hooks(device *dev) {
          reinterpret_cast<void **>(&g_d3d12_create_shader_resource_view)},
         {19, "CreateUnorderedAccessView", reinterpret_cast<void *>(&hook_d3d12_create_unordered_access_view),
          reinterpret_cast<void **>(&g_d3d12_create_unordered_access_view)},
+        {27, "CreateCommittedResource", reinterpret_cast<void *>(&hook_d3d12_create_committed_resource),
+         reinterpret_cast<void **>(&g_d3d12_create_committed_resource)},
         {23, "CopyDescriptors", reinterpret_cast<void *>(&hook_d3d12_copy_descriptors),
          reinterpret_cast<void **>(&g_d3d12_copy_descriptors)},
         {24, "CopyDescriptorsSimple", reinterpret_cast<void *>(&hook_d3d12_copy_descriptors_simple),
