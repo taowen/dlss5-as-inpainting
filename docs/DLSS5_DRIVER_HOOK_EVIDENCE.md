@@ -267,7 +267,7 @@ artifacts committed to the repository.
 
 ## Exact pre-front producer snapshots
 
-The launch hook can now insert a fence-synchronized copy immediately after
+The launch hook can now request a fence-synchronized copy immediately after
 the native pre-block launch and, optionally, after its first `inpview` launch:
 
 ```powershell
@@ -288,14 +288,22 @@ arena ranges:
 | inpview output | `0x1bdfec00` | `0x3fec00` | `0xc8000` |
 
 The first and second ranges are written by the pre CUBIN; the third range is
-written by `cc_tinlayout_fused_swin_1h_32_1_inpview_tilesync_fp8` after it
-consumes the second range. The captured full arena is 15,711,232 bytes. In
-the latest run the exact pre and inpview snapshots were respectively:
+the output address supplied to `cc_tinlayout_fused_swin_1h_32_1_inpview_tilesync_fp8`.
+The captured full arena is 15,711,232 bytes. In the latest run the exact pre
+snapshot was:
 
 ```text
 after_pre     c0131e251dc2271b80b3580070f217aa39e478a5915f094a22e07abbc8bff311
-after_inpview 7a373645619763957801374d709bc16c5f19ce2a196df4c5ec21fcd93e0f4e30
 ```
+
+The optional `after_inpview` copy is diagnostic only. `LaunchCuKernelChain`
+is a driver-managed submission boundary; returning from the NVAPI call does
+not guarantee that a same-list observation has the consumer's completed
+contents. Across temporal passes the immediate copy can therefore contain a
+clear or a later producer's bytes even though the launch parameters prove the
+`0x1bdfec00` destination address. Only the pre-block fence snapshot is used
+as an exact intermediate oracle until a completion signal for the private
+chain is captured.
 
 The byte sizes factor as a 32-channel E4M3/byte tensor at both views:
 `320*320*32 = 0x320000` and `160*160*32 = 0xc8000`. This agrees with the

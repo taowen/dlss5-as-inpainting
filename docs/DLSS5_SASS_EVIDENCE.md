@@ -239,8 +239,8 @@ from the D3D12 Neural consumer and is now recorded as raw-byte SHA-256 plus
 changed-range metadata in `report.json`.
 
 The NVAPI launch hook now adds a more precise boundary: a readback can be
-inserted immediately after `cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8`
-and after its first `inpview` consumer. In the 256x256 5080 control, the
+requested after `cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8` and after
+its first `inpview` consumer. In the 256x256 5080 control, the
 contiguous storage views are:
 
 ```text
@@ -249,10 +249,14 @@ pre output 1: GPU VA 0x1bd36c00, arena +0x336c00, 0x0c8000 bytes = 160*160*32 E4
 inpview out : GPU VA 0x1bdfec00, arena +0x3fec00, 0x0c8000 bytes = 160*160*32 E4M3 bytes
 ```
 
-The three views are still in native tile/lane order. Their byte extents and
-E4M3 storage are proven by the launch parameters, SASS packing instructions,
-store coverage, and byte-for-byte arena readback; only their logical PyTorch
-index permutation remains to be recovered. Two disposable source-register
+The three addresses are still in native tile/lane order. The pre-view byte
+extents and E4M3 storage are proven by the launch parameters, SASS packing
+instructions, store coverage, and byte-for-byte arena readback. The
+`after_inpview` address is proven by its launch payload, but its immediate
+readback is not a completion signal for the driver-managed private chain; it is
+diagnostic until a private completion event is captured. Only the pre-view
+logical PyTorch index permutation remains to be recovered from this storage
+evidence. Two disposable source-register
 probes make part of that physical order executable and auditable: on the
 160x160 view's 204,800 little-endian 32-bit store units, every unit matches
 

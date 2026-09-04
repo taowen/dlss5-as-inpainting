@@ -139,7 +139,7 @@ def main() -> int:
             "buffer": summarize(args.after_inpview, args.arena_gpu_va),
             "changed_bytes_vs_after_pre": sum(end - start for start, end in runs),
             "changed_runs": runs,
-            "proven_output_region": region(
+            "diagnostic_output_region": region(
                 "inpview_output_candidate",
                 args.arena_gpu_va,
                 args.inpview_output_gpu_va,
