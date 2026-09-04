@@ -23,3 +23,11 @@ The front sequence also contains `HADD2` with `-0.5`, `HMUL2`, FP16 packing and
 tile with one alignment lane, not a plain 15-channel RGB copy. The exact
 coordinate/filter arithmetic and the logical ordering of the packed feature
 lanes remain the next reconstruction target.
+
+There is an additional non-RGB dependency before the stores: the SASS mixes an
+integer hash path with `MUFU.LG2`, `MUFU.SQRT`, `MUFU.SIN` and `MUFU.COS`, then
+converts the results to FP16 before the final packing. This is consistent with
+a deterministic Box--Muller-style noise pair, not with an external random
+stream. The PyTorch producer will therefore need the same coordinate/seed
+hash and half rounding before its 15-channel projection can be compared with
+the native golden output.
