@@ -24,6 +24,15 @@ tile with one alignment lane, not a plain 15-channel RGB copy. The exact
 coordinate/filter arithmetic and the logical ordering of the packed feature
 lanes remain the next reconstruction target.
 
+An independent public reverse-engineering note adds a useful structural
+constraint: it describes the pre-block producer as three generated FP16 lanes,
+a constant `1.0`, and four sampled texture lanes. This is consistent with the
+SASS hash/math prefix and the later `0x7` texture reads in the packing path.
+It does not yet specify whether each lane is a scalar or packed
+half2, nor the exact lane order, so it is used as a layout constraint rather
+than copied as an implementation. See
+[`madebyollin/dlss_5_model_architecture.md`](https://gist.github.com/madebyollin/55c703a34bf90962844edcd68d04e32e).
+
 There is an additional non-RGB dependency before the stores: the SASS mixes an
 integer hash path with `MUFU.LG2`, `MUFU.SQRT`, `MUFU.SIN` and `MUFU.COS`, then
 converts the results to FP16 before the final packing. This is consistent with
