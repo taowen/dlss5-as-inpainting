@@ -98,5 +98,20 @@ They are stronger dynamic evidence than the worker's byte-level result: the
 native path's temporal state and motion-vector inputs affect the full-precision
 neural output, not only the presentation conversion.
 
+The experiment is now automated by the standard-library-only
+`tools/dlss5_fp16_harness_probe.py` driver. For example, with the locally built
+external harness:
+
+```powershell
+python tools\dlss5_fp16_harness_probe.py `
+  --harness C:\path\to\dlss5_eval.exe `
+  --output runtime_probe_output\fp16_harness
+```
+
+The 2026-09-04 run of this fixed contract reported history MAE/RMSE
+`0.042045/0.060939` and shifted-MV-vs-zero-MV MAE/RMSE `0.007987/0.016926`.
+The raw frames and manifest are ignored local evidence; the harness and all
+runtime DLLs remain external.
+
 The temporary build, SDK headers, and locally staged runtime are outside this
 repository. NVIDIA runtime files and third-party binaries are not committed.
