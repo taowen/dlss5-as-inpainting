@@ -192,3 +192,8 @@ emulation、145,754,963 parameters）如下：
 说明在恢复精确前端之前，不能把 DLSS5 当作已经完成的 image-to-image PyTorch
 模型。`tools/compare_dlss5_fp16_pytorch.py` 可复用同一 RGBA16F 输入合同进行后续
 候选对照。
+
+另外，`tools/probe_dlss5_pre_front_columns.py` 会将 15 个 logical K lane 逐个置为
+`1.0`。RTX 5080 的 64² 扫描中，15 个 lane 全部保持有限，但输出都被放大到大约
+`[-7,+10]` 范围，说明当前非零 front 输入路径整体仍未校准；该工具用于回归检查
+HMMA tile 解码和 lane reorder，不应被解释为 native 中间张量 dump。
