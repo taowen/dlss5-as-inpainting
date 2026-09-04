@@ -314,6 +314,50 @@ def decode_hmma_16816_f16_tile(tile: Tensor) -> Tensor:
     return logical
 
 
+def assemble_pre_front_feature_lanes(
+    generated_lanes: Tensor,
+    texture_lanes: Tensor,
+    constant: Optional[Tensor] = None,
+) -> Tensor:
+    """Pack the externally reconstructed block0 front lanes into ``K=15``.
+
+    The public reverse-engineering evidence describes the front producer as
+    three generated FP16 lanes, one constant ``1.0`` lane, and four sampled
+    texture lanes. A CUDA half2 lane carries two scalar FP16 values, so this
+    helper exposes that candidate contract explicitly:
+
+    ``generated_lanes: [N, 3, 2, H, W]`` -> 6 channels
+    ``constant:       [N, 1, H, W]``     -> 1 channel
+    ``texture_lanes:  [N, 4, 2, H, W]`` -> 8 channels
+
+    The result is ``[N, 15, H, W]`` and is accepted by ``pre_front_features``.
+    This is only a packing boundary: the hash/coordinate producer and the
+    exact lane ordering are still supplied by the caller until SASS parity is
+    established.
+    """
+
+    if generated_lanes.ndim != 5 or generated_lanes.shape[1:3] != (3, 2):
+        raise ValueError("generated_lanes must have shape [N, 3, 2, H, W]")
+    if texture_lanes.ndim != 5 or texture_lanes.shape[1:3] != (4, 2):
+        raise ValueError("texture_lanes must have shape [N, 4, 2, H, W]")
+    if generated_lanes.shape[0] != texture_lanes.shape[0] or generated_lanes.shape[-2:] != texture_lanes.shape[-2:]:
+        raise ValueError("generated_lanes and texture_lanes must share batch/spatial shape")
+    if constant is None:
+        constant = torch.ones(
+            generated_lanes.shape[0], 1, *generated_lanes.shape[-2:],
+            device=generated_lanes.device,
+            dtype=generated_lanes.dtype,
+        )
+    if constant.ndim != 4 or constant.shape[1] != 1 or constant.shape[0] != generated_lanes.shape[0]:
+        raise ValueError("constant must have shape [N, 1, H, W]")
+    if constant.shape[-2:] != generated_lanes.shape[-2:]:
+        raise ValueError("constant must share the generated lane spatial shape")
+    return torch.cat(
+        (generated_lanes.flatten(1, 2), constant, texture_lanes.flatten(1, 2)),
+        dim=1,
+    )
+
+
 # The fused kernels use ``MpCubicSiluActivation`` rather than GELU.  These
 # are the exact half constants embedded in the sm_86/sm_120 SASS path.  The
 # expression is written in the same order as the host op list:
@@ -2225,6 +2269,11 @@ def _self_test() -> None:
     history = torch.randn_like(color)
     motion = torch.zeros(1, 2, 64, 64).half()
     mask = torch.ones(1, 1, 64, 64).half()
+    generated = torch.zeros(1, 3, 2, 8, 8).half()
+    texture = torch.zeros(1, 4, 2, 8, 8).half()
+    packed = assemble_pre_front_feature_lanes(generated, texture)
+    assert packed.shape == (1, 15, 8, 8)
+    assert torch.equal(packed[:, 6], torch.ones(1, 8, 8).half())
     with torch.no_grad():
         y = model(color, history, motion)
         z = model(color, history, motion, mask)
