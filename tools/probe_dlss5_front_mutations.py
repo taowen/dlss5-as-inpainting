@@ -39,16 +39,10 @@ from dlss5_fp16_harness_probe import run_harness, write_contracts  # noqa: E402
 
 KERNEL = "cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8"
 CAPTURE_RE = re.compile(r"dlss5_d3d12_capture_(\d+)_(\d+)\.rgba16f\.bin$")
-CAPTURE_ALL_LAYOUT = (
-    "root0_descriptor0",
-    "root0_descriptor1",
-    "root0_descriptor2",
-    "root0_descriptor3",
-    "root0_descriptor4",
-    "root0_descriptor5",
-    "root1_descriptor0",
+DISPATCH_RE = re.compile(r"d3d12_dispatch .* neural=(\d+)")
+CAPTURE_SCHEDULE_RE = re.compile(
+    r"d3d12_capture_scheduled label=([^ ]+) .* index=(\d+)"
 )
-
 MUTATIONS: tuple[dict[str, str], ...] = (
     {
         "name": "coord_fadd_half_to_zero",
@@ -300,7 +294,7 @@ def copy_runtime(template: Path, destination: Path, harness: Path, addon: Path, 
 
 def capture_pair(
     runtime: Path, width: int, height: int, capture_all: bool
-) -> tuple[Path, Path, list[Path]]:
+) -> tuple[Path, Path, list[Path], list[str], Path | None, Path | None]:
     groups: dict[str, list[tuple[int, Path]]] = {}
     for path in runtime.glob("dlss5_d3d12_capture_*.rgba16f.bin"):
         match = CAPTURE_RE.fullmatch(path.name)
@@ -312,15 +306,50 @@ def capture_pair(
     captures.sort(key=lambda item: item[0])
     if len(captures) < 2:
         raise RuntimeError("Neural readback produced fewer than two SRV captures")
+    layout_by_index: dict[int, str] = {}
+    current_kind = "unknown"
+    log_path = runtime / "dlss5_reshade_capture.log"
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            dispatch = DISPATCH_RE.search(line)
+            if dispatch:
+                current_kind = "neural" if dispatch.group(1) == "1" else "original"
+            scheduled = CAPTURE_SCHEDULE_RE.search(line)
+            if scheduled:
+                label, index = scheduled.groups()
+                layout_by_index[int(index)] = f"{current_kind}:{label}"
+    capture_layout = [layout_by_index.get(index, "legacy_capture") for index, _ in captures]
+    hidden_neural = None
+    final_texture = None
     if capture_all:
-        # The add-on visits root0[0..7] then root1[0..3] for each Neural
-        # dispatch. On the current carrier seven of those descriptors resolve
-        # to 2D textures; the final seven entries are the latest dispatch.
-        if len(captures) < 7:
-            raise RuntimeError("all-resource capture produced fewer than seven textures")
-        latest = captures[-7:]
-        original = latest[0][1]
-        neural = latest[1][1]
+        # Group by the actual dispatch labels from the add-on log. The carrier
+        # can issue a trailing Original dispatch while writing the harness
+        # output, so the latest files are not necessarily the latest Neural
+        # resources.
+        neural_batches: list[list[tuple[int, Path]]] = []
+        current_batch: list[tuple[int, Path]] = []
+        for item in captures:
+            label = layout_by_index.get(item[0], "")
+            if label == "neural:root0_descriptor0":
+                if current_batch:
+                    neural_batches.append(current_batch)
+                current_batch = [item]
+            elif current_batch and label.startswith("neural:"):
+                current_batch.append(item)
+        if current_batch:
+            neural_batches.append(current_batch)
+        if not neural_batches:
+            raise RuntimeError("all-resource capture found no complete Neural dispatch")
+        latest = neural_batches[-1]
+        latest_by_label = {
+            layout_by_index.get(index, ""): path for index, path in latest
+        }
+        original = latest_by_label.get("neural:root0_descriptor0")
+        neural = latest_by_label.get("neural:root0_descriptor1")
+        hidden_neural = latest_by_label.get("neural:root0_descriptor2")
+        final_texture = latest_by_label.get("neural:root0_descriptor5")
+        if not original or not neural or not hidden_neural or not final_texture:
+            raise RuntimeError("latest Neural dispatch did not expose descriptors 0, 1, 2, and 5")
     else:
         original = captures[-2][1]
         neural = captures[-1][1]
@@ -329,7 +358,7 @@ def capture_pair(
     read_rgba16f(neural, width, height)
     for path in all_paths:
         read_rgba16f(path, width, height)
-    return original, neural, all_paths
+    return original, neural, all_paths, capture_layout, hidden_neural, final_texture
 
 
 def run_case(
@@ -441,6 +470,10 @@ def run_case(
             env["DLSS5_D3D12_CAPTURE_ALL_NEURAL"] = "1"
         else:
             env.pop("DLSS5_D3D12_CAPTURE_ALL_NEURAL", None)
+        if args.capture_all_dispatches:
+            env["DLSS5_D3D12_CAPTURE_ALL_DISPATCHES"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_ALL_DISPATCHES", None)
         env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
         for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
@@ -461,11 +494,16 @@ def run_case(
             os.environ.clear()
             os.environ.update(old_env)
 
-        original_path, neural_path, all_captures = capture_pair(
+        (
+            original_path,
+            neural_path,
+            all_captures,
+            capture_layout,
+            hidden_neural,
+            final_texture,
+        ) = capture_pair(
             runtime, args.width, args.height, args.capture_all_neural
         )
-        hidden_neural = all_captures[-7 + 2] if args.capture_all_neural else None
-        final_texture = all_captures[-7 + 5] if args.capture_all_neural else None
         result.update(
             {
                 "status": "ok",
@@ -473,10 +511,7 @@ def run_case(
                 "original_capture": str(original_path),
                 "neural_capture": str(neural_path),
                 "all_captures": [str(path) for path in all_captures],
-                "capture_layout": (
-                    [CAPTURE_ALL_LAYOUT[index % len(CAPTURE_ALL_LAYOUT)] for index in range(len(all_captures))]
-                    if args.capture_all_neural else ["legacy_capture"] * len(all_captures)
-                ),
+                "capture_layout": capture_layout,
                 "hidden_neural_capture": str(hidden_neural) if hidden_neural else None,
                 "final_texture_capture": str(final_texture) if final_texture else None,
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
@@ -511,6 +546,11 @@ def main() -> int:
         "--capture-all-neural",
         action="store_true",
         help="capture every resolved 2D descriptor around each Neural dispatch",
+    )
+    parser.add_argument(
+        "--capture-all-dispatches",
+        action="store_true",
+        help="capture the same descriptor set after Original and Neural dispatches",
     )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
@@ -598,6 +638,7 @@ def main() -> int:
                 "input": args.input,
                 "sequence": [args.input, "checker" if args.input == "color" else "color"],
                 "capture_all_neural": args.capture_all_neural,
+                "capture_all_dispatches": args.capture_all_dispatches,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

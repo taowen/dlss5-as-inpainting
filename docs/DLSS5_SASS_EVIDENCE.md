@@ -204,6 +204,13 @@ This is the first direct evidence that the mutated pre path reaches hidden
 Neural resources. The full scan is reproducible by adding
 `--capture-all-neural` to the command above.
 
+Adding `--capture-all-dispatches` confirms the timing: the earlier Original
+dispatches and their descriptor resources remain unchanged; only the latest
+Neural `root0[2]` changes first, followed by the final-output aliases
+`root0[5]/root1[0]`. The runner now parses the dispatch labels from the add-on
+log, so a trailing Original dispatch emitted during `WRITE` cannot be mistaken
+for the latest Neural tensor.
+
 Component-level masks provide an additional lane constraint. With the same
 carrier and temporal sequence, masking each TEX to two components produced:
 
