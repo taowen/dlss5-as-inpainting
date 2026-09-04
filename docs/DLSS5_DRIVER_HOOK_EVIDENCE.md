@@ -160,24 +160,24 @@ private table hook now provides a stable place to identify the driver calls,
 their caller sites, GPU/resource arguments, and eventually the private module
 or command-buffer payload.
 
-## Remaining capture work
+## Capture boundary status
 
 The current recorder stores ordered per-dispatch snapshots and can dump pointed
-CUBIN containers. The optional D3D12 readback exposes the live Neural image and
-the exact 15,711,232-byte driver-owned arena before Neural dispatch, but not the
-arena's tensor layout or its internal command description. The D3D12 evidence
-proves the visible carrier composition pass; the private table evidence proves
-the lower driver boundary. The remaining blocker for a bit-exact PyTorch model
-is the missing pre-front tensor producer and its driver resource bindings. The previous direct
-`STS -> STG` mutation had no valid driver binding and correctly resulted in a
-device hang, so the next safe step is to decode the high-frequency private
-slot structures/resource handles rather than mutate another store.
+CUBIN containers. The NVAPI wrapper now exposes the actual CUBIN launch ABI,
+and the optional D3D12 readback can copy the exact 15,711,232-byte driver-owned
+arena immediately after the pre-block producer and its first inpview consumer.
+The D3D12 evidence proves the visible carrier composition pass; the private
+and NVAPI traces prove the lower driver boundary and its resource bindings.
+The previous direct `STS -> STG` mutation had no valid driver binding and
+correctly resulted in a device hang; subsequent experiments use only existing
+legal stores and isolated patched runtimes.
 
 The 147 MiB model UAV is now separately capturable. Its snapshot maps all 153
 serialized `WEIGHTS_HT` records byte-for-byte after native alignment, including
 block0 front-tile offsets `0x2010` and `0x2210`; the coordinate mutation leaves
-this buffer unchanged. The dynamic 15.7 MiB UAV is therefore the remaining
-activation/command-memory target for exact intermediate recovery.
+this buffer unchanged. The dynamic 15.7 MiB UAV's pre output views are now
+captured; remaining independent-translation work is the logical `tinlayout`
+permutation and numerical equivalence of the SASS operations.
 
 The table mechanism is undocumented by NVIDIA; the public CUDA API documents
 the normal `cuLaunchKernel` route, not this table. The implementation is

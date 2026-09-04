@@ -329,8 +329,9 @@ pre-block shared tile, and the earlier `STS -> STG` experiment faulted the GPU
 at warm-up because it wrote through an address/descriptor that is not a valid
 telemetry target at that point.
 
-The remaining exact-conversion task is therefore a driver/NGX-level capture
-or a valid host-provided scratch binding. The PyTorch graph remains executable
-on the 5080, but its default RGB path is explicitly a zero-front fallback; it
-must not be described as bit-exact DLSS5 or as a recovered image-to-image
-generator until the pre texture/front tensor is captured or its ABI is proved.
+The driver/NGX capture and valid scratch binding are now available. The
+remaining independent-conversion task is to decode the logical `tinlayout`
+permutation and reproduce every SASS numerical boundary in ordinary PyTorch;
+the native-CUBIN PyTorch-facing model is already bit-exact for the pinned
+carrier contract, while `tools/dlss5_pytorch.py` remains the readable
+non-exact translation.
