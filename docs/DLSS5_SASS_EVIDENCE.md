@@ -80,6 +80,21 @@ a debug store only in a disposable copy. Any patched kernel must be validated
 with an independent disassembly and a 5080 numeric probe; SASS scheduling and
 hidden ABI metadata are part of correctness.
 
+The repository pins [cubit](https://github.com/kacper-daftcode/cubit) as a
+submodule and provides:
+
+```powershell
+.\tools\build_cubit.ps1
+.\tools\verify_dlss5_cubit.ps1
+```
+
+The verifier targets the block0 pre kernel rather than claiming that every
+function in the fatbin is supported. On the local CUBIN it re-encoded 3,792 of
+3,792 instructions and preserved all 2,789,376 bytes byte-for-byte. A
+disposable seed experiment changed only one instruction byte at file offset
+`0x1A15A4` and produced a valid patched CUBIN; it was not installed into the
+DLSS runtime.
+
 ## CUPTI capture result on this machine
 
 The repository now contains `tools/cupti_capture`, a small Windows DLL that
