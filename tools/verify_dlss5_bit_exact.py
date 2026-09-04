@@ -14,7 +14,7 @@ import torch
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 
-from dlss5_bit_exact import DLSS5BitExactCarrier  # noqa: E402
+from dlss5_bit_exact import DLSS5BitExactModel  # noqa: E402
 from dlss5_fp16_harness_probe import run_harness, write_contracts  # noqa: E402
 
 
@@ -40,7 +40,7 @@ def main() -> int:
             [(contracts["color"], 1), (contracts["checker"], 0)],
             native_output,
         )
-        with DLSS5BitExactCarrier(
+        with DLSS5BitExactModel(
             harness,
             width=args.width,
             height=args.height,

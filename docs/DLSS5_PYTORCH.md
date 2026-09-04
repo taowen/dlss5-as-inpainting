@@ -142,6 +142,12 @@ It keeps one native feature session alive so temporal history is preserved.
 independent native process; the local 5080 control is byte-equal at SHA-256
 `1fe38ab7fe6b85b8352fd11a48b15b32c2713029785baa7ee9a9ba934f38f1e3`.
 
+`DLSS5BitExactModel.forward` enters the `torch.library` operator
+`dlss5::bit_exact`; the operator is inference-only and uses the model's
+stateful native session identified by an internal session token. It is not a
+portable TorchScript/ONNX export, because preserving exactness requires the
+original driver-managed CUBIN launch chain.
+
 The exact pre producer bytes can also be loaded without guessing a logical
 reshape:
 

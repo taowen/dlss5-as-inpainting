@@ -327,7 +327,8 @@ python tools/verify_dlss5_bit_exact.py --runtime <prepared-runtime>
 ```
 
 The verifier runs an independent native two-frame golden process and a second
-process through `DLSS5BitExactCarrier`, then compares the raw RGBA16F bytes.
+process through `DLSS5BitExactModel`/`dlss5::bit_exact`, then compares the raw
+RGBA16F bytes.
 The local RTX 5080 result is:
 
 ```text

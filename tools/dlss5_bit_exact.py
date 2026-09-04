@@ -25,6 +25,10 @@ import torch
 from torch import Tensor, nn
 
 
+_EXACT_SESSIONS_LOCK = threading.RLock()
+_EXACT_SESSIONS: dict[str, "DLSS5BitExactCarrier"] = {}
+
+
 class DLSS5BitExactCarrier(nn.Module):
     """Run the pinned native DLSS5 carrier while presenting a PyTorch API.
 
@@ -174,8 +178,8 @@ class DLSS5BitExactCarrier(nn.Module):
         )
         return output.permute(2, 0, 1).unsqueeze(0).contiguous().to(device=device)
 
-    def forward(self, rgb: Tensor) -> Tensor:
-        """Evaluate one frame and return exact native RGBA16F as NCHW."""
+    def _forward_native(self, rgb: Tensor) -> Tensor:
+        """Evaluate one frame in the native carrier session."""
 
         with self._lock:
             if self._process is None:
@@ -188,6 +192,11 @@ class DLSS5BitExactCarrier(nn.Module):
             self._send(f"WRITE {output_path}", "WRITE_OK")
             self._frame += 1
             return self._output_tensor(output_path, rgb.device)
+
+    def forward(self, rgb: Tensor) -> Tensor:
+        """Evaluate one frame and return exact native RGBA16F as NCHW."""
+
+        return self._forward_native(rgb)
 
     def reset(self) -> None:
         """Close the feature so the next call starts a fresh temporal session."""
@@ -242,3 +251,38 @@ class DLSS5BitExactModel(DLSS5BitExactCarrier):
     native feature session, temporal state, input contract, and byte-level
     guarantee are identical to :class:`DLSS5BitExactCarrier`.
     """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._session = f"dlss5-{id(self):x}"
+        with _EXACT_SESSIONS_LOCK:
+            _EXACT_SESSIONS[self._session] = self
+
+    def forward(self, rgb: Tensor) -> Tensor:
+        # Use a real torch.library dispatch point. The implementation below
+        # still calls this instance's native session, so temporal state is not
+        # duplicated or hidden in a second carrier.
+        return torch.ops.dlss5.bit_exact.default(rgb, self._session)
+
+    def close(self) -> None:
+        session = getattr(self, "_session", None)
+        if session is not None:
+            with _EXACT_SESSIONS_LOCK:
+                _EXACT_SESSIONS.pop(session, None)
+        super().close()
+
+
+@torch.library.custom_op("dlss5::bit_exact", mutates_args=(), device_types=["cpu", "cuda"])
+def _dlss5_bit_exact_operator(rgb: Tensor, session: str) -> Tensor:
+    with _EXACT_SESSIONS_LOCK:
+        carrier = _EXACT_SESSIONS.get(session)
+    if carrier is None:
+        raise RuntimeError(f"unknown DLSS5 exact session: {session}")
+    return carrier._forward_native(rgb)
+
+
+@_dlss5_bit_exact_operator.register_fake
+def _dlss5_bit_exact_fake(rgb: Tensor, _session: str) -> Tensor:
+    if rgb.ndim != 4:
+        raise ValueError("expected [1, 3, H, W] for DLSS5 exact operator")
+    return torch.empty((1, 4, rgb.shape[2], rgb.shape[3]), dtype=rgb.dtype, device=rgb.device)
