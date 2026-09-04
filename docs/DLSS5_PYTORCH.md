@@ -244,3 +244,13 @@ emulation、145,754,963 parameters）如下：
 `1.0`。RTX 5080 的 64² 扫描中，15 个 lane 全部保持有限，但输出都被放大到大约
 `[-7,+10]` 范围，说明当前非零 front 输入路径整体仍未校准；该工具用于回归检查
 HMMA tile 解码和 lane reorder，不应被解释为 native 中间张量 dump。
+
+## Portable deployment
+
+For a backend-independent checkpoint that produces a valid image without the
+private CUDA front-end, use `tools/dlss5_portable.py` and
+`tools/distill_dlss5_portable.py`. The complete usage, input contract, native
+distillation workflow, and CPU/CUDA validation are documented in
+[`DLSS5_PORTABLE.md`](DLSS5_PORTABLE.md). This portable model is intentionally
+separate from both the semantic 71-block graph and the native bit-exact
+carrier.

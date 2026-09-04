@@ -208,7 +208,51 @@ def quantize_s_e4m3_satfinite(values: Tensor) -> Tensor:
 
     finite = torch.nan_to_num(values, nan=0.0, posinf=448.0, neginf=-448.0)
     finite = finite.clamp(-448.0, 448.0)
-    return finite.to(torch.float8_e4m3fn).to(values.dtype)
+    # CUDA builds of PyTorch expose a native conversion that is closest to
+    # the hardware path.  Some non-NVIDIA backends expose the float8 dtype but
+    # do not implement the conversion kernel; use the backend-neutral decoder
+    # below in that case rather than making the translated model CUDA-only.
+    if values.device.type == "cuda":
+        try:
+            return finite.to(torch.float8_e4m3fn).to(values.dtype)
+        except (AttributeError, NotImplementedError, RuntimeError):
+            pass
+    return _quantize_s_e4m3_satfinite_portable(finite)
+
+
+def _quantize_s_e4m3_satfinite_portable(values: Tensor) -> Tensor:
+    """Pure tensor E4M3FN round-trip used when a backend lacks float8 casts."""
+
+    source_dtype = values.dtype
+    work = values.float()
+    magnitude = work.abs()
+    min_normal = 2.0**-6
+    subnormal_step = 2.0**-9
+
+    # E4M3FN uses exponent bits 1..15 for finite normal values.  The last
+    # exponent has mantissas 0..6; mantissa 7 is the NaN code.  Thus the finite
+    # maximum is 2**8 * (1 + 6/8) = 448.
+    subnormal_quantum = torch.round(magnitude / subnormal_step)
+    promoted = (magnitude < min_normal) & (subnormal_quantum >= 8.0)
+    subnormal_value = subnormal_quantum.clamp(0.0, 7.0) * subnormal_step
+
+    normal_magnitude = magnitude.clamp(min_normal, 448.0)
+    exponent = torch.floor(torch.log2(normal_magnitude)).clamp(-6.0, 8.0)
+    base = torch.pow(torch.tensor(2.0, device=work.device, dtype=work.dtype), exponent)
+    mantissa = torch.round((normal_magnitude / base - 1.0) * 8.0)
+    carry = mantissa >= 8.0
+    exponent = torch.where(carry, (exponent + 1.0).clamp(max=8.0), exponent)
+    mantissa = torch.where(carry, torch.zeros_like(mantissa), mantissa)
+    # The exponent-8 row has no finite mantissa-7 encoding.
+    mantissa = torch.where(exponent >= 8.0, mantissa.clamp(max=6.0), mantissa.clamp(0.0, 7.0))
+    normal_value = torch.pow(
+        torch.tensor(2.0, device=work.device, dtype=work.dtype), exponent
+    ) * (1.0 + mantissa / 8.0)
+
+    quantized = torch.where(magnitude < min_normal, subnormal_value, normal_value)
+    quantized = torch.where(promoted, torch.full_like(quantized, min_normal), quantized)
+    quantized = torch.where(magnitude == 0.0, torch.zeros_like(quantized), quantized)
+    return torch.copysign(quantized, work).to(source_dtype)
 
 
 def _fp8_boundary(module: nn.Module, values: Tensor) -> Tensor:
