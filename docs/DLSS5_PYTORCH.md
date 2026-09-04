@@ -142,6 +142,20 @@ It keeps one native feature session alive so temporal history is preserved.
 independent native process; the local 5080 control is byte-equal at SHA-256
 `1fe38ab7fe6b85b8352fd11a48b15b32c2713029785baa7ee9a9ba934f38f1e3`.
 
+The exact pre producer bytes can also be loaded without guessing a logical
+reshape:
+
+```python
+from tools.dlss5_pre_storage import pre_downsample_from_file
+
+physical = pre_downsample_from_file("after_pre_arena.bin")
+# [160, 2, 40, 16, 4], uint8 E4M3 storage order
+```
+
+`pre_downsample_to_hwc_candidate` is provided for experiments and has an
+explicit candidate name; its reversible HWC interpretation is not used by the
+exact model until the consumer-side lane permutation is proven.
+
 ## 权重边界
 
 `WEIGHTS_HT.bin` 的外层记录可以严格解析，主体字节流由 cubin 的 signed E4M3 解码路径确认。外层的两字节元素只是容器；FP8 权重按字节存放，部分尾部/头部是 FP16 参数。
