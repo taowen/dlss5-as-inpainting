@@ -1,0 +1,33 @@
+{
+  "schema": "public_image_sources_v1",
+  "files": {
+    "blue_marble.jpg": {
+      "url": "https://commons.wikimedia.org/wiki/Special:FilePath/Nasa_blue_marble.jpg?width=1200",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Nasa_blue_marble.jpg",
+      "license": "Public domain; NASA/USGS/NOAA",
+      "bytes": 488790,
+      "sha256": "966b3ccf6b51be1a1cf8798f1610281c243b2c289b822779e246f143e2a2ee34"
+    },
+    "scenic_landscape.jpg": {
+      "url": "https://commons.wikimedia.org/wiki/Special:FilePath/Vintage_scenic_landscape_photo.jpg?width=1200",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Vintage_scenic_landscape_photo.jpg",
+      "license": "Public domain; U.S. Fish and Wildlife Service",
+      "bytes": 251032,
+      "sha256": "4256ddeed36d8584fb3c25609d1dc80dfd8c0de3ea79a05d3e219fb7d182c69e"
+    },
+    "stone_texture.jpg": {
+      "url": "https://commons.wikimedia.org/wiki/Special:FilePath/STONE_TEXTURE.jpg?width=1200",
+      "source_page": "https://commons.wikimedia.org/wiki/File:STONE_TEXTURE.jpg",
+      "license": "CC0",
+      "bytes": 759729,
+      "sha256": "0125b5c954e57c39b3fcb7dde082e09e85aa2fb9760809016c6e2bf78e56926a"
+    },
+    "portrait_cc0.jpg": {
+      "url": "https://commons.wikimedia.org/wiki/Special:FilePath/-Portrait_of_a_Man-_MET_DP326401.jpg?width=1200",
+      "source_page": "https://commons.wikimedia.org/wiki/File:-Portrait_of_a_Man-_MET_DP326401.jpg",
+      "license": "CC0; The Metropolitan Museum of Art Open Access",
+      "bytes": 409181,
+      "sha256": "ffc3c39c5128c01f96b497b3fce1b3d70f1903c7ed286c5e99c500a7053e0c79"
+    }
+  }
+}

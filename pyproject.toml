@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dlss5-as-inpainting"
+version = "0.1.0"
+description = "Research and portable PyTorch interfaces for the recovered DLSS5 graph"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.0"]
+
+[project.optional-dependencies]
+research = ["numpy>=1.26"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

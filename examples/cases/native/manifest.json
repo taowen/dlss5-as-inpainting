@@ -1,0 +1,515 @@
+{
+  "schema": "dlss5_image_cases_v1",
+  "harness": "dlss5_eval.exe",
+  "dimensions": [
+    256,
+    256
+  ],
+  "ffmpeg": "ffmpeg.EXE",
+  "contract": {
+    "color": "RGBA16F little-endian, linear RGB plus alpha=1",
+    "png_preview": "native linear RGB converted to sRGB for display",
+    "depth": "R32F reversed-Z proxy; depth_luma is synthetic 1-luma, depth_flat is 1.0",
+    "motion": "RG16F; motion_rightN supplies +N.0 in the horizontal component",
+    "temporal": "reset=1 seeds history; reset=0 evaluates with prior state"
+  },
+  "inputs": {
+    "blue_marble": {
+      "source": "examples/assets/input/blue_marble.jpg",
+      "source_sha256": "966b3ccf6b51be1a1cf8798f1610281c243b2c289b822779e246f143e2a2ee34",
+      "normalized": "examples/assets/normalized/blue_marble.png",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "color_contract": "sRGB source decoded to linear RGB, packed as RGBA16F with alpha=1"
+    },
+    "portrait_cc0": {
+      "source": "examples/assets/input/portrait_cc0.jpg",
+      "source_sha256": "ffc3c39c5128c01f96b497b3fce1b3d70f1903c7ed286c5e99c500a7053e0c79",
+      "normalized": "examples/assets/normalized/portrait_cc0.png",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "color_contract": "sRGB source decoded to linear RGB, packed as RGBA16F with alpha=1"
+    },
+    "scenic_landscape": {
+      "source": "examples/assets/input/scenic_landscape.jpg",
+      "source_sha256": "4256ddeed36d8584fb3c25609d1dc80dfd8c0de3ea79a05d3e219fb7d182c69e",
+      "normalized": "examples/assets/normalized/scenic_landscape.png",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "color_contract": "sRGB source decoded to linear RGB, packed as RGBA16F with alpha=1"
+    },
+    "stone_texture": {
+      "source": "examples/assets/input/stone_texture.jpg",
+      "source_sha256": "0125b5c954e57c39b3fcb7dde082e09e85aa2fb9760809016c6e2bf78e56926a",
+      "normalized": "examples/assets/normalized/stone_texture.png",
+      "shape": [
+        256,
+        256,
+        3
+      ],
+      "color_contract": "sRGB source decoded to linear RGB, packed as RGBA16F with alpha=1"
+    }
+  },
+  "outputs": {
+    "blue_marble_static_luma": {
+      "output": "examples/cases/native/blue_marble_static_luma.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_static_luma.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.869140625
+      ]
+    },
+    "portrait_cc0_static_luma": {
+      "output": "examples/cases/native/portrait_cc0_static_luma.png",
+      "raw_contract": "examples/.work/outputs/portrait_cc0_static_luma.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.00028896331787109375,
+        0.83349609375
+      ]
+    },
+    "scenic_landscape_static_luma": {
+      "output": "examples/cases/native/scenic_landscape_static_luma.png",
+      "raw_contract": "examples/.work/outputs/scenic_landscape_static_luma.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.9814453125
+      ]
+    },
+    "stone_texture_static_luma": {
+      "output": "examples/cases/native/stone_texture_static_luma.png",
+      "raw_contract": "examples/.work/outputs/stone_texture_static_luma.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.93505859375
+      ]
+    },
+    "blue_marble_depth_flat": {
+      "output": "examples/cases/native/blue_marble_depth_flat.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_depth_flat.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.869140625
+      ]
+    },
+    "stone_texture_depth_flat": {
+      "output": "examples/cases/native/stone_texture_depth_flat.png",
+      "raw_contract": "examples/.work/outputs/stone_texture_depth_flat.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.93505859375
+      ]
+    },
+    "portrait_cc0_depth_flat": {
+      "output": "examples/cases/native/portrait_cc0_depth_flat.png",
+      "raw_contract": "examples/.work/outputs/portrait_cc0_depth_flat.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.00028896331787109375,
+        0.83349609375
+      ]
+    },
+    "blue_marble_motion_zero": {
+      "output": "examples/cases/native/blue_marble_motion_zero.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_motion_zero.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        7.468461990356445e-05,
+        0.87939453125
+      ]
+    },
+    "blue_marble_motion_right8": {
+      "output": "examples/cases/native/blue_marble_motion_right8.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_motion_right8.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        3.504753112792969e-05,
+        0.87109375
+      ]
+    },
+    "blue_marble_motion_right1": {
+      "output": "examples/cases/native/blue_marble_motion_right1.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_motion_right1.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        3.421306610107422e-05,
+        0.875
+      ]
+    },
+    "blue_marble_motion_right4": {
+      "output": "examples/cases/native/blue_marble_motion_right4.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_motion_right4.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        9.09566879272461e-05,
+        0.85205078125
+      ]
+    },
+    "blue_marble_motion_right16": {
+      "output": "examples/cases/native/blue_marble_motion_right16.png",
+      "raw_contract": "examples/.work/outputs/blue_marble_motion_right16.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        3.522634506225586e-05,
+        0.86376953125
+      ]
+    },
+    "history_blue_to_scenic": {
+      "output": "examples/cases/native/history_blue_to_scenic.png",
+      "raw_contract": "examples/.work/outputs/history_blue_to_scenic.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        8.404254913330078e-06,
+        0.90087890625
+      ]
+    },
+    "history_scenic_isolated": {
+      "output": "examples/cases/native/history_scenic_isolated.png",
+      "raw_contract": "examples/.work/outputs/history_scenic_isolated.rgba16f.bin",
+      "shape": [
+        256,
+        256,
+        4
+      ],
+      "range_rgb": [
+        0.0,
+        0.97998046875
+      ]
+    },
+    "blue_marble_motion_difference_x8": {
+      "output": "examples/cases/native/blue_marble_motion_difference_x8.png",
+      "preview": "absolute RGB difference, amplified before sRGB display encoding",
+      "left": "blue_marble_motion_zero",
+      "right": "blue_marble_motion_right8",
+      "amplify": 8.0
+    },
+    "history_difference_x8": {
+      "output": "examples/cases/native/history_difference_x8.png",
+      "preview": "absolute RGB difference, amplified before sRGB display encoding",
+      "left": "history_blue_to_scenic",
+      "right": "history_scenic_isolated",
+      "amplify": 8.0
+    },
+    "blue_marble_depth_difference_x8": {
+      "output": "examples/cases/native/blue_marble_depth_difference_x8.png",
+      "preview": "absolute RGB difference, amplified before sRGB display encoding",
+      "left": "blue_marble_static_luma",
+      "right": "blue_marble_depth_flat",
+      "amplify": 8.0
+    }
+  },
+  "metrics": {
+    "blue_marble_static_luma_versus_linear_input": {
+      "mae": 0.024072108790278435,
+      "rmse": 0.060252733528614044,
+      "max_abs": 0.735107421875,
+      "changed_fraction_gt_1e-3": 0.50604248046875,
+      "correlation": 0.9826865792274475,
+      "mean_rgb_left": [
+        0.05842696875333786,
+        0.06620683521032333,
+        0.07404624670743942
+      ],
+      "mean_rgb_right": [
+        0.08140674978494644,
+        0.08752429485321045,
+        0.09517985582351685
+      ]
+    },
+    "portrait_cc0_static_luma_versus_linear_input": {
+      "mae": 0.009537138044834137,
+      "rmse": 0.022541994228959084,
+      "max_abs": 0.46023422479629517,
+      "changed_fraction_gt_1e-3": 0.6838582356770834,
+      "correlation": 0.9919407367706299,
+      "mean_rgb_left": [
+        0.14496421813964844,
+        0.11979834735393524,
+        0.09871052205562592
+      ],
+      "mean_rgb_right": [
+        0.14314953982830048,
+        0.1198326125741005,
+        0.10012076795101166
+      ]
+    },
+    "scenic_landscape_static_luma_versus_linear_input": {
+      "mae": 0.010798354633152485,
+      "rmse": 0.01638559252023697,
+      "max_abs": 0.4656490087509155,
+      "changed_fraction_gt_1e-3": 0.7743174235026041,
+      "correlation": 0.9978138208389282,
+      "mean_rgb_left": [
+        0.16655145585536957,
+        0.20965304970741272,
+        0.1960286647081375
+      ],
+      "mean_rgb_right": [
+        0.17239999771118164,
+        0.21610680222511292,
+        0.20634838938713074
+      ]
+    },
+    "stone_texture_static_luma_versus_linear_input": {
+      "mae": 0.04577261209487915,
+      "rmse": 0.06926701962947845,
+      "max_abs": 0.4677734375,
+      "changed_fraction_gt_1e-3": 0.94708251953125,
+      "correlation": 0.9894213080406189,
+      "mean_rgb_left": [
+        0.18196551501750946,
+        0.14389066398143768,
+        0.13117410242557526
+      ],
+      "mean_rgb_right": [
+        0.24609996378421783,
+        0.18693286180496216,
+        0.15809319913387299
+      ]
+    },
+    "motion_vector_effect": {
+      "left": "blue_marble_motion_zero",
+      "right": "blue_marble_motion_right8",
+      "mae": 0.005274530500173569,
+      "rmse": 0.015359151177108288,
+      "max_abs": 0.27978515625,
+      "changed_fraction_gt_1e-3": 0.3908538818359375,
+      "correlation": 0.9906520843505859,
+      "mean_rgb_left": [
+        0.05467841401696205,
+        0.06215621531009674,
+        0.06934534758329391
+      ],
+      "mean_rgb_right": [
+        0.05409916490316391,
+        0.0616011805832386,
+        0.06898579746484756
+      ]
+    },
+    "motion_vector_sweep": {
+      "1": {
+        "left": "blue_marble_motion_zero",
+        "right": "blue_marble_motion_right1",
+        "mae": 0.0039525460451841354,
+        "rmse": 0.010526754893362522,
+        "max_abs": 0.219482421875,
+        "changed_fraction_gt_1e-3": 0.3907216389973958,
+        "correlation": 0.9956658482551575,
+        "mean_rgb_left": [
+          0.05467841401696205,
+          0.06215621531009674,
+          0.06934534758329391
+        ],
+        "mean_rgb_right": [
+          0.054513052105903625,
+          0.062401771545410156,
+          0.06994318217039108
+        ]
+      },
+      "4": {
+        "left": "blue_marble_motion_zero",
+        "right": "blue_marble_motion_right4",
+        "mae": 0.005953335668891668,
+        "rmse": 0.017238972708582878,
+        "max_abs": 0.4403076171875,
+        "changed_fraction_gt_1e-3": 0.4079030354817708,
+        "correlation": 0.9882696866989136,
+        "mean_rgb_left": [
+          0.05467841401696205,
+          0.06215621531009674,
+          0.06934534758329391
+        ],
+        "mean_rgb_right": [
+          0.05370312184095383,
+          0.06106197088956833,
+          0.0682510957121849
+        ]
+      },
+      "8": {
+        "left": "blue_marble_motion_zero",
+        "right": "blue_marble_motion_right8",
+        "mae": 0.005274530500173569,
+        "rmse": 0.015359151177108288,
+        "max_abs": 0.27978515625,
+        "changed_fraction_gt_1e-3": 0.3908538818359375,
+        "correlation": 0.9906520843505859,
+        "mean_rgb_left": [
+          0.05467841401696205,
+          0.06215621531009674,
+          0.06934534758329391
+        ],
+        "mean_rgb_right": [
+          0.05409916490316391,
+          0.0616011805832386,
+          0.06898579746484756
+        ]
+      },
+      "16": {
+        "left": "blue_marble_motion_zero",
+        "right": "blue_marble_motion_right16",
+        "mae": 0.00600854866206646,
+        "rmse": 0.017132198438048363,
+        "max_abs": 0.3963623046875,
+        "changed_fraction_gt_1e-3": 0.4081064860026042,
+        "correlation": 0.9884383082389832,
+        "mean_rgb_left": [
+          0.05467841401696205,
+          0.06215621531009674,
+          0.06934534758329391
+        ],
+        "mean_rgb_right": [
+          0.05357895419001579,
+          0.06099649891257286,
+          0.06756527721881866
+        ]
+      }
+    },
+    "history_effect": {
+      "left": "history_blue_to_scenic",
+      "right": "history_scenic_isolated",
+      "mae": 0.01312214881181717,
+      "rmse": 0.03731568902730942,
+      "max_abs": 0.59228515625,
+      "changed_fraction_gt_1e-3": 0.741455078125,
+      "correlation": 0.9862301349639893,
+      "mean_rgb_left": [
+        0.15613068640232086,
+        0.19668951630592346,
+        0.18477162718772888
+      ],
+      "mean_rgb_right": [
+        0.1647348254919052,
+        0.2081923484802246,
+        0.19470332562923431
+      ]
+    },
+    "blue_marble_depth_effect": {
+      "left": "blue_marble_static_luma",
+      "right": "blue_marble_depth_flat",
+      "mae": 0.0,
+      "rmse": 0.0,
+      "max_abs": 0.0,
+      "changed_fraction_gt_1e-3": 0.0,
+      "correlation": 1.0000001192092896,
+      "mean_rgb_left": [
+        0.05842696875333786,
+        0.06620683521032333,
+        0.07404624670743942
+      ],
+      "mean_rgb_right": [
+        0.05842696875333786,
+        0.06620683521032333,
+        0.07404624670743942
+      ]
+    },
+    "stone_texture_depth_effect": {
+      "left": "stone_texture_static_luma",
+      "right": "stone_texture_depth_flat",
+      "mae": 0.0,
+      "rmse": 0.0,
+      "max_abs": 0.0,
+      "changed_fraction_gt_1e-3": 0.0,
+      "correlation": 1.0000001192092896,
+      "mean_rgb_left": [
+        0.18196551501750946,
+        0.14389066398143768,
+        0.13117410242557526
+      ],
+      "mean_rgb_right": [
+        0.18196551501750946,
+        0.14389066398143768,
+        0.13117410242557526
+      ]
+    },
+    "portrait_cc0_depth_effect": {
+      "left": "portrait_cc0_static_luma",
+      "right": "portrait_cc0_depth_flat",
+      "mae": 0.0,
+      "rmse": 0.0,
+      "max_abs": 0.0,
+      "changed_fraction_gt_1e-3": 0.0,
+      "correlation": 0.9999999403953552,
+      "mean_rgb_left": [
+        0.14496421813964844,
+        0.11979834735393524,
+        0.09871052205562592
+      ],
+      "mean_rgb_right": [
+        0.14496421813964844,
+        0.11979834735393524,
+        0.09871052205562592
+      ]
+    }
+  },
+  "interpretation": {
+    "depth": "These depth maps are controlled proxies, not a depth-estimator result.",
+    "motion": "The experiment measures sensitivity to the supplied vector; it does not assume the sign convention is correct for every host.",
+    "history": "The blue-to-scenic case intentionally changes content to expose temporal carry-over."
+  }
+}

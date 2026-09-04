@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
 *.obj
 tools/*.exe
 .native-build/
@@ -7,3 +8,4 @@ tools/*.exe
 # Reproducible local extraction/export and runtime evidence artifacts.
 DLSS5-extracted/
 runtime_probe_output/
+examples/.work/

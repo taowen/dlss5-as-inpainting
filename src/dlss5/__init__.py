@@ -15,10 +15,12 @@ from .ops import (
     cct_cubic_silu, decode_hmma_16816_f16_tile, decode_post_output_tile_candidate,
     decode_post_output_tile_column_major, decode_s_e4m3, quantize_s_e4m3_satfinite,
 )
+from .portable import DLSS5PortableModel, PORTABLE_FORMAT, load_portable_checkpoint
 from .weights import DLSS5WeightMap, WeightRecord, decode_fp8_matrix
 
 __all__ = [
-    "DLSS5Graph", "DLSS5WeightLoader", "DLSS5WeightMap", "WeightRecord",
+    "DLSS5Graph", "DLSS5PortableModel", "DLSS5WeightLoader", "DLSS5WeightMap", "WeightRecord",
+    "PORTABLE_FORMAT", "load_portable_checkpoint",
     "decode_s_e4m3", "quantize_s_e4m3_satfinite", "decode_fp8_matrix",
     "decode_post_output_tile_candidate", "decode_post_output_tile_column_major",
     "decode_hmma_16816_f16_tile", "assemble_pre_front_feature_lanes",
