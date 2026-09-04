@@ -576,6 +576,34 @@ void dump_dark_memory(const char *api, uintptr_t value) {
     });
 }
 
+void dump_dark_struct(size_t slot, const char *phase, const char *kind,
+                      size_t ordinal, uintptr_t value) {
+    if (value < 0x10000) return;
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(reinterpret_cast<const void *>(value), &region, sizeof(region)) != sizeof(region) ||
+        region.State != MEM_COMMIT || region.Protect == PAGE_NOACCESS ||
+        region.Protect == PAGE_GUARD) return;
+    const uintptr_t region_end = reinterpret_cast<uintptr_t>(region.BaseAddress) + region.RegionSize;
+    if (value >= region_end) return;
+    const size_t bytes = static_cast<size_t>(std::min<uintptr_t>(0x1000, region_end - value));
+    std::vector<uint8_t> data(bytes);
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(value),
+                           data.data(), data.size(), &copied) || copied < 16) return;
+    std::ostringstream name;
+    name << "dlss5_dark_struct_" << GetCurrentProcessId() << "_slot" << slot
+         << '_' << phase << '_' << kind << ordinal << ".bin";
+    const bool written = write_runtime_binary(name.str(), data.data(), copied);
+    log([&] {
+        std::ostringstream s;
+        s << "dark_struct_dump slot=" << std::dec << slot << " phase=" << phase
+          << " kind=" << kind << ordinal << " ptr=0x" << std::hex << value
+          << " bytes=" << std::dec << copied << " written=" << written
+          << " file=" << name.str();
+        return s.str();
+    });
+}
+
 void dump_dark_binary(const char *api, uintptr_t value) {
     if (value < 0x10000) return;
 
@@ -1340,6 +1368,16 @@ void dump_dark_records() {
             for (uintptr_t value : entry->stack_args) {
                 dump_dark_memory("dark_table_stack_memory", value);
                 dump_dark_binary("dark_table_stack_memory", value);
+            }
+        }
+        if (env_enabled("DLSS5_DARK_DUMP_STRUCTS")) {
+            for (size_t i = 0; i < 4; ++i) {
+                dump_dark_struct(entry->index, "first", "reg", i, entry->register_args[i]);
+                dump_dark_struct(entry->index, "latest", "reg", i, entry->last_register_args[i]);
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                dump_dark_struct(entry->index, "first", "stack", i, entry->stack_args[i]);
+                dump_dark_struct(entry->index, "latest", "stack", i, entry->last_stack_args[i]);
             }
         }
     }

@@ -38,6 +38,11 @@ writes `dlss5_d3d12_capture_<pid>_<n>.rgba16f.bin` beside the harness. The
 capture uses a fence and restores the source resource state before returning;
 the clean-control metrics are a required regression check when using it.
 
+Set `DLSS5_DARK_DUMP_STRUCTS=1` to write 4 KiB snapshots for first/latest
+private-slot pointer arguments. A current scan found driver engine-name tables
+(`cuda_dldn_engine_*` and `hiluma_engine_*`) but no additional neural CUBIN or
+activation pointer beyond the clear utility described below.
+
 ## RTX 5080 result
 
 On the local driver/runtime pair:
