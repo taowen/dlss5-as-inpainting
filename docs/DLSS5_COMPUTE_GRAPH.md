@@ -133,6 +133,34 @@ Output = neural_result + effective_blend * (base_result - neural_result)
 - 只控制最终各像素采用多少已经计算出的 neural result；
 - `0` 选择 neural result；`1` 选择由全局 `blend_scale` 限制的 base/neural 混合结果。
 
+## ControlMask runtime validation
+
+The call sequence used by the stereo experiment is:
+
+```text
+create R8_UNORM ControlMask texture
+upload valid=255 / hole=0
+Set("DLSSNR.ControlMask", resource)
+Set("DLSSNR.ControlMaskSubrectBaseX/Y", 0)
+Set("DLSSNR.ControlMaskSubrectWidth/Height", W/H)
+Set("DLSSNR.UseAutoMask", 0)
+EvaluateFeature(...)
+```
+
+The resource and subrect were set at feature creation and again immediately
+before every Evaluate. A temporary harness with `--mask-file` accepted the
+spatial R8 plane. However, constant `mask=0`, constant `mask=255`, and the
+spatial `valid=255/hole=0` plane produced byte-identical output on the pinned
+runtime/add-on. The static SASS formula is therefore the documented semantic
+contract, but native ControlMask is not currently observable in this host.
+The stereo pipeline applies the same 0=neural/1=base selection at its host
+composite boundary and records both results for later native-binding work.
+
+An additional `UseAutoMask=0/1` A/B on the same temporal planar case was also
+byte-identical. In this pinned runtime, neither the explicit ControlMask
+resource nor the automatic-mask switch is an observable way to gate the
+neural output.
+
 ## 权重包
 
 `WEIGHTS_HT.bin` 是可顺序解析的自定义 tensor map，不是 ONNX：

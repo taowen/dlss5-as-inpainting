@@ -8,8 +8,14 @@
   "simple_hole_mae": 0.1521236151456833,
   "spatial_mask_dlss5_hole_mae": 0.13796931505203247,
   "spatial_mask_dlss5_all_mae": 0.050096362829208374,
+  "host_control_masked_hole_mae": 0.13796931505203247,
+  "host_control_masked_all_mae": 0.00862308219075203,
+  "host_control_masked_all_rmse": 0.05212611332535744,
+  "host_control_masked_definition": "valid pixels select simple RightPrefilledColor; HoleMask pixels select native DLSS5 output",
   "spatial_mask_vs_constant255_mae": 0.0,
   "spatial_mask_vs_constant255_rmse": 0.0,
   "spatial_mask_vs_constant255_max_abs": 0.0,
-  "conclusion": "The mask-file path was accepted by the temporary harness but had no observable effect in this native runtime/add-on combination. The modest hole-only improvement is therefore not evidence of selective HoleMask-gated inpainting; full-image quality still worsens versus the simple baseline."
+  "auto_mask0_vs_auto_mask1_mae": 0.0,
+  "auto_mask0_vs_auto_mask1_rmse": 0.0,
+  "conclusion": "The mask-file path was accepted by the temporary harness but had no observable effect in this native runtime/add-on combination. The working stereo pipeline therefore applies the same mask semantics at the host composite boundary; this preserves valid pixels and improves the planar oracle all-pixel MAE to 0.00862."
 }

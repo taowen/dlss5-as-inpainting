@@ -131,9 +131,9 @@ The next layers are intentionally not hidden behind the current model API:
 - replace the synthetic depth proxy with a depth estimator and calibrate its
   reversed-Z mapping;
 - add a documented temporal-state object and motion-vector reprojection tests;
-- validate ControlMask and inpainting-specific masks against native outputs;
-- validate the no-op ControlMask binding with launch/resource telemetry, then
-  repeat the stereo test with the actual HoleMask;
+- validate the no-op native ControlMask binding with launch/resource telemetry;
+- keep the working host-side ControlMask stereo composite and repeat it on a
+  layered scene with a known background behind an occluder;
 - expand native-pair distillation beyond the current public fixtures;
 - recover the remaining private front producer before making any stronger
   native-equivalence claim.

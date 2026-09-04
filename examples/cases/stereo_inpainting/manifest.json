@@ -10,7 +10,8 @@
     "target_x": "round(source_x - (0.5 + max_disparity * normalized_depth))",
     "z_buffer": "larger normalized inverse-depth value wins",
     "motion": "source_x - target_x in right-eye pixel coordinates; holes use zero",
-    "simple_fill": "nearest valid source pixel on each scanline"
+    "simple_fill": "nearest valid source pixel on each scanline",
+    "host_control_mask": "valid pixels select RightPrefilledColor; HoleMask pixels select native DLSS neural output"
   },
   "records": {
     "blue_marble_predicted_depth": {
@@ -42,11 +43,28 @@
         "rmse": 0.06313300877809525,
         "max_abs": 0.718017578125
       },
+      "host_control_masked_vs_simple": {
+        "mae": 0.0010040021734312177,
+        "rmse": 0.013886041007936,
+        "max_abs": 0.6437909603118896
+      },
+      "host_control_masked_vs_neural": {
+        "mae": 0.023888632655143738,
+        "rmse": 0.06147105246782303,
+        "max_abs": 0.718017578125
+      },
       "output_range": [
         0.0,
         0.86328125
       ],
-      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)"
+      "artifacts": {
+        "right_warped": "examples/cases/stereo_inpainting/blue_marble_predicted_depth_right_warped.png",
+        "right_simple": "examples/cases/stereo_inpainting/blue_marble_predicted_depth_right_simple.png",
+        "right_dlss5_neural": "examples/cases/stereo_inpainting/blue_marble_predicted_depth_right_dlss5.png",
+        "right_control_masked": "examples/cases/stereo_inpainting/blue_marble_predicted_depth_right_control_masked.png",
+        "hole_mask": "examples/cases/stereo_inpainting/blue_marble_predicted_depth_hole_mask.png"
+      },
+      "mask_mode": "host-side valid=base/hole=neural; native spatial valid=255/hole=0"
     },
     "portrait_cc0_predicted_depth": {
       "input": "examples/assets/normalized/portrait_cc0.png",
@@ -77,11 +95,28 @@
         "rmse": 0.021211810410022736,
         "max_abs": 0.36648422479629517
       },
+      "host_control_masked_vs_simple": {
+        "mae": 0.0016852617263793945,
+        "rmse": 0.015358880162239075,
+        "max_abs": 0.6376272439956665
+      },
+      "host_control_masked_vs_neural": {
+        "mae": 0.009064801037311554,
+        "rmse": 0.02004185877740383,
+        "max_abs": 0.36648422479629517
+      },
       "output_range": [
         3.2067298889160156e-05,
         0.78564453125
       ],
-      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)"
+      "artifacts": {
+        "right_warped": "examples/cases/stereo_inpainting/portrait_cc0_predicted_depth_right_warped.png",
+        "right_simple": "examples/cases/stereo_inpainting/portrait_cc0_predicted_depth_right_simple.png",
+        "right_dlss5_neural": "examples/cases/stereo_inpainting/portrait_cc0_predicted_depth_right_dlss5.png",
+        "right_control_masked": "examples/cases/stereo_inpainting/portrait_cc0_predicted_depth_right_control_masked.png",
+        "hole_mask": "examples/cases/stereo_inpainting/portrait_cc0_predicted_depth_hole_mask.png"
+      },
+      "mask_mode": "host-side valid=base/hole=neural; native spatial valid=255/hole=0"
     },
     "stone_texture_plane_oracle": {
       "input": "examples/assets/normalized/stone_texture.png",
@@ -108,19 +143,37 @@
         "rmse": 0.20850445330142975,
         "max_abs": 0.95062255859375
       },
-      "mask0_vs_mask255": {
+      "host_control_masked_error_all": {
+        "mae": 0.00862308219075203,
+        "rmse": 0.05212611332535744,
+        "max_abs": 0.95062255859375
+      },
+      "host_control_masked_error_holes": {
+        "mae": 0.13796931505203247,
+        "rmse": 0.20850445330142975,
+        "max_abs": 0.95062255859375
+      },
+      "selected_mask_vs_constant255": {
         "mae": 0.0,
         "rmse": 0.0,
         "max_abs": 0.0
       },
       "hole_mae_improvement": 0.014154300093650818,
-      "mask_mode": "constant 0 (neural upper-bound; spatial HoleMask not yet bound)",
+      "artifacts": {
+        "right_warped": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_right_warped.png",
+        "right_simple": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_right_simple.png",
+        "right_ground_truth": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_right_ground_truth.png",
+        "right_dlss5_neural": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_right_dlss5.png",
+        "right_control_masked": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_right_control_masked.png",
+        "hole_mask": "examples/cases/stereo_inpainting/stone_texture_plane_oracle_hole_mask.png"
+      },
+      "mask_mode": "host-side valid=base/hole=neural; native spatial valid=255/hole=0",
       "interpretation": "known planar translation proxy, not genuinely unseen disocclusion ground truth"
     }
   },
   "limitations": [
     "relative monocular depth is a disparity proxy, not metric stereo depth",
-    "native harness accepts constant --mask only; mask0/mask255 are compared and spatial HoleMask is not bound",
+    "the default harness accepts constant --mask only; --spatial-mask requires the locally patched mask-file harness",
     "unknown disoccluded background has no image-only ground truth; only the planar oracle has a known reference"
   ]
 }

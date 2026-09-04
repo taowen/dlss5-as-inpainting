@@ -286,8 +286,10 @@ HoleMask、Motion Vector 和 JSON 指标见
 当前结论不是“DLSS5 已解决双目洞填补”：在可构造 ground truth 的平面纹理 oracle 中，
 DLSS5 将洞区 MAE 从 `0.15212` 降到 `0.13797`，但全图 MAE 从 `0.00951` 升到 `0.05010`；
 随后已用临时 spatial mask-file harness 提交 `valid=255/hole=0` 的 R8 mask，结果与
-`mask=255` 仍逐值一致。说明当前 runtime/add-on 的 ControlMask 绑定没有可观测效果，
-这次洞区改善不能证明是 selective inpainting。
+`mask=255` 仍逐值一致。说明当前 runtime/add-on 的 native ControlMask 绑定没有可观测
+效果；因此已在 stereo 最终合成边界实现同语义的 host-side ControlMask：有效像素选择
+简单重投影，HoleMask 像素选择 DLSS5 输出。这样 oracle 全图 MAE 从 `0.00951` 降到
+`0.00862`，同时保持 native mask A/B 证据不变。
 
 因此下一步应先用 launch/resource telemetry 定位 ControlMask 是否真正绑定到 native
 执行链，再用有真实遮挡背景的 layered scene 做最终判定。

@@ -146,6 +146,19 @@ def save_gray(encode_fn, image: np.ndarray, path: Path, amplify: float = 1.0) ->
     encode_fn(np.repeat(np.rint(value * 255.0).astype(np.uint8)[..., None], 3, axis=2), path)
 
 
+def apply_host_control_mask(neural: np.ndarray, base: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Apply the PLAN mask at the final stereo composite boundary.
+
+    Native SASS defines mask=0 as neural and mask=1 as base. The current
+    runtime does not expose that branch, so this host-side equivalent keeps
+    every geometrically valid pixel from the simple reprojection and lets the
+    neural result fill only HoleMask pixels. This is deliberately named host
+    control-mask application, not a claim that native ControlMask executed.
+    """
+
+    return np.where(valid[..., None], base, neural)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", type=Path, required=True)
@@ -173,6 +186,9 @@ def main() -> int:
     from experiments.run_dlss5_image_cases import find_ffmpeg
 
     ffmpeg = find_ffmpeg()
+
+    def artifact(path: Path) -> str:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
 
     def encode(image: np.ndarray, path: Path) -> None:
         encode_rgb8(ffmpeg, image, path)
@@ -210,10 +226,12 @@ def main() -> int:
             extra_args=mask_args,
         )
         dlss = read_native_output(native_raw, args.width, args.height)
+        masked = apply_host_control_mask(dlss, geometry["prefilled"], geometry["valid"])
         encode_preview(encode, left, args.output_dir / f"{prefix}_left.png")
         encode_preview(encode, geometry["warped"], args.output_dir / f"{prefix}_right_warped.png")
         encode_preview(encode, geometry["prefilled"], args.output_dir / f"{prefix}_right_simple.png")
         encode_preview(encode, dlss, args.output_dir / f"{prefix}_right_dlss5.png")
+        encode_preview(encode, masked, args.output_dir / f"{prefix}_right_control_masked.png")
         save_gray(encode, geometry["hole_mask"].astype(np.float32), args.output_dir / f"{prefix}_hole_mask.png")
         save_gray(encode, np.abs(dlss - geometry["prefilled"]).mean(axis=2), args.output_dir / f"{prefix}_dlss5_minus_simple_x8.png", 8.0)
         records[prefix] = {
@@ -226,8 +244,17 @@ def main() -> int:
             "dlss5_vs_simple": metric(dlss, geometry["prefilled"]),
             "dlss5_vs_simple_holes": metric(dlss, geometry["prefilled"], geometry["hole_mask"]),
             "dlss5_vs_simple_valid": metric(dlss, geometry["prefilled"], geometry["valid"]),
+            "host_control_masked_vs_simple": metric(masked, geometry["prefilled"]),
+            "host_control_masked_vs_neural": metric(masked, dlss),
             "output_range": [float(dlss.min()), float(dlss.max())],
-            "mask_mode": "spatial valid=255/hole=0" if args.spatial_mask else "constant 0 (spatial HoleMask not bound)",
+            "artifacts": {
+                "right_warped": artifact(args.output_dir / f"{prefix}_right_warped.png"),
+                "right_simple": artifact(args.output_dir / f"{prefix}_right_simple.png"),
+                "right_dlss5_neural": artifact(args.output_dir / f"{prefix}_right_dlss5.png"),
+                "right_control_masked": artifact(args.output_dir / f"{prefix}_right_control_masked.png"),
+                "hole_mask": artifact(args.output_dir / f"{prefix}_hole_mask.png"),
+            },
+            "mask_mode": "host-side valid=base/hole=neural; native spatial valid=255/hole=0" if args.spatial_mask else "host-side valid=base/hole=neural; native constant 0",
         }
 
     # A controlled planar case supplies a known complete right-eye reference.
@@ -264,12 +291,14 @@ def main() -> int:
         extra_args=["--mask", "255"],
     )
     dlss_mask255 = read_native_output(native_mask255_raw, args.width, args.height)
+    masked = apply_host_control_mask(dlss, geometry["prefilled"], geometry["valid"])
     encode_preview(encode, left, args.output_dir / f"{plane_name}_left.png")
     encode_preview(encode, geometry["warped"], args.output_dir / f"{plane_name}_right_warped.png")
     encode_preview(encode, geometry["prefilled"], args.output_dir / f"{plane_name}_right_simple.png")
     encode_preview(encode, ground_truth, args.output_dir / f"{plane_name}_right_ground_truth.png")
     encode_preview(encode, dlss, args.output_dir / f"{plane_name}_right_dlss5.png")
     encode_preview(encode, dlss_mask255, args.output_dir / f"{plane_name}_right_dlss5_mask255.png")
+    encode_preview(encode, masked, args.output_dir / f"{plane_name}_right_control_masked.png")
     save_gray(encode, geometry["hole_mask"].astype(np.float32), args.output_dir / f"{plane_name}_hole_mask.png")
     save_gray(encode, np.abs(geometry["prefilled"] - ground_truth).mean(axis=2), args.output_dir / f"{plane_name}_simple_error_x8.png", 8.0)
     save_gray(encode, np.abs(dlss - ground_truth).mean(axis=2), args.output_dir / f"{plane_name}_dlss5_error_x8.png", 8.0)
@@ -282,9 +311,19 @@ def main() -> int:
         "simple_error_holes": metric(geometry["prefilled"], ground_truth, geometry["hole_mask"]),
         "dlss5_error_all": metric(dlss, ground_truth),
         "dlss5_error_holes": metric(dlss, ground_truth, geometry["hole_mask"]),
+        "host_control_masked_error_all": metric(masked, ground_truth),
+        "host_control_masked_error_holes": metric(masked, ground_truth, geometry["hole_mask"]),
         "selected_mask_vs_constant255": metric(dlss, dlss_mask255),
         "hole_mae_improvement": metric(geometry["prefilled"], ground_truth, geometry["hole_mask"])["mae"] - metric(dlss, ground_truth, geometry["hole_mask"])["mae"],
-        "mask_mode": "spatial valid=255/hole=0" if args.spatial_mask else "constant 0 (spatial HoleMask not bound)",
+        "artifacts": {
+            "right_warped": artifact(args.output_dir / f"{plane_name}_right_warped.png"),
+            "right_simple": artifact(args.output_dir / f"{plane_name}_right_simple.png"),
+            "right_ground_truth": artifact(args.output_dir / f"{plane_name}_right_ground_truth.png"),
+            "right_dlss5_neural": artifact(args.output_dir / f"{plane_name}_right_dlss5.png"),
+            "right_control_masked": artifact(args.output_dir / f"{plane_name}_right_control_masked.png"),
+            "hole_mask": artifact(args.output_dir / f"{plane_name}_hole_mask.png"),
+        },
+        "mask_mode": "host-side valid=base/hole=neural; native spatial valid=255/hole=0" if args.spatial_mask else "host-side valid=base/hole=neural; native constant 0",
         "interpretation": "known planar translation proxy, not genuinely unseen disocclusion ground truth",
     }
 
@@ -298,6 +337,7 @@ def main() -> int:
             "z_buffer": "larger normalized inverse-depth value wins",
             "motion": "source_x - target_x in right-eye pixel coordinates; holes use zero",
             "simple_fill": "nearest valid source pixel on each scanline",
+            "host_control_mask": "valid pixels select RightPrefilledColor; HoleMask pixels select native DLSS neural output",
         },
         "records": records,
         "limitations": [
