@@ -146,5 +146,11 @@ changes the neural output.
 
 The patch is intentionally not installed into `bin/` and does not claim to
 recover the front feature tensor. The next safe experiments are same-length
-patches to the pre `TEX` coordinate/math path, followed by output A/B runs;
-the extractor and patcher now provide the required reversible boundary.
+or metadata-adjusted patches to the pre `TEX` coordinate/math path, followed by
+output A/B runs; the extractor and patcher now provide the required reversible
+boundary. A first coordinate experiment changed the `FADD R5,R5,0.5` constant
+to `0.0`. Its patched DLL ran successfully; the isolated first checker output
+was unchanged, while the history-after-color output changed with MAE
+`0.0038043`, RMSE `0.0066071`, and `149,982/262,144` elements above `1e-3`.
+This is consistent with a temporal/state-dependent coordinate path and is not
+yet a recovered texture-lane formula.
