@@ -183,3 +183,23 @@ The table mechanism is undocumented by NVIDIA; the public CUDA API documents
 the normal `cuLaunchKernel` route, not this table. The implementation is
 therefore pinned to the observed driver build and remains a diagnostic hook,
 not a production dependency.
+
+## Complete private-call ring
+
+The recorder now keeps a 1024-entry per-slot call ring in its extended trace
+record. `tools/read_dlss5_driver_trace.py` accepts both the legacy record and
+the extended record; add `--samples` to print the per-call arguments. A fresh
+native 256x256 run recorded the complete high-frequency sequence:
+
+| slot | calls | caller return site | evidence |
+|---:|---:|---|---|
+| 44 | 532 | `nvwgf2umx+0x1d8ffb` | second argument advances by `0x100` |
+| 52 | 532 | `nvwgf2umx+0x1d8fba` | paired metadata call |
+| 53 | 1064 | `nvwgf2umx+0x1d8dc2` and `+0x1d8eab` | two descriptor/resource calls per slot-44 item |
+
+This is a stronger dynamic record of the private resource boundary, but it is
+not yet a kernel-launch ABI: ordinary `cuLaunch*`, graphics-interop, memcpy,
+and NVAPI execution hooks remain silent for this carrier. The ring therefore
+narrowed the remaining work without changing the bit-exact status: the model
+weights are exact, while the pre-front producer and driver-side launch/cbuffer
+binding are still unresolved.

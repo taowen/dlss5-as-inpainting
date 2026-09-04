@@ -42,6 +42,23 @@ using CuGetExportTableFn = CUresult(__stdcall *)(const void **, const void *);
 using CuLaunchKernelFn = CUresult(__stdcall *)(CUfunction, unsigned int, unsigned int, unsigned int,
                                                 unsigned int, unsigned int, unsigned int, unsigned int,
                                                 CUstream, void **, void **);
+using CuLaunchFn = CUresult(__stdcall *)(CUfunction);
+using CuGraphLaunchFn = CUresult(__stdcall *)(void *, CUstream);
+using CuMemcpyHtoDFn = CUresult(__stdcall *)(uint64_t, const void *, size_t);
+using CuMemcpyHtoDAsyncFn = CUresult(__stdcall *)(uint64_t, const void *, size_t, CUstream);
+using CuMemcpyDtoDFn = CUresult(__stdcall *)(uint64_t, uint64_t, size_t);
+using CuMemcpyDtoDAsyncFn = CUresult(__stdcall *)(uint64_t, uint64_t, size_t, CUstream);
+using NvApiQueryInterfaceFn = void *(__stdcall *)(unsigned int);
+using NvApiDirectGetMethodFn = uintptr_t(__stdcall *)(
+    uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using CuGraphicsMapResourcesFn = CUresult(__stdcall *)(unsigned int, void **, CUstream);
+using CuGraphicsUnmapResourcesFn = CUresult(__stdcall *)(unsigned int, void **, CUstream);
+using CuGraphicsSubResourceGetMappedArrayFn = CUresult(__stdcall *)(
+    void **, void *, unsigned int, unsigned int);
+using CuGraphicsResourceGetMappedPointerFn = CUresult(__stdcall *)(
+    uint64_t *, size_t *, void *);
+using CuGraphicsResourceSetMapFlagsFn = CUresult(__stdcall *)(void *, unsigned int);
+using CuGraphicsUnregisterResourceFn = CUresult(__stdcall *)(void *);
 struct CuLaunchConfig {
     unsigned int grid_x;
     unsigned int grid_y;
@@ -60,8 +77,30 @@ CuModuleLoadDataFn g_cu_module_load_data = nullptr;
 CuModuleLoadDataExFn g_cu_module_load_data_ex = nullptr;
 CuModuleGetFunctionFn g_cu_module_get_function = nullptr;
 CuLaunchKernelFn g_cu_launch_kernel = nullptr;
+CuLaunchKernelFn g_cu_launch_kernel_ptsz = nullptr;
 CuLaunchKernelExFn g_cu_launch_kernel_ex = nullptr;
 CuLaunchKernelExFn g_cu_launch_kernel_ex_ptsz = nullptr;
+CuLaunchFn g_cu_launch = nullptr;
+CuGraphLaunchFn g_cu_graph_launch = nullptr;
+CuMemcpyHtoDFn g_cu_memcpy_htod = nullptr;
+CuMemcpyHtoDFn g_cu_memcpy_htod_v2 = nullptr;
+CuMemcpyHtoDAsyncFn g_cu_memcpy_htod_async = nullptr;
+CuMemcpyHtoDAsyncFn g_cu_memcpy_htod_async_v2 = nullptr;
+CuMemcpyDtoDFn g_cu_memcpy_dtod = nullptr;
+CuMemcpyDtoDFn g_cu_memcpy_dtod_v2 = nullptr;
+CuMemcpyDtoDAsyncFn g_cu_memcpy_dtod_async = nullptr;
+CuMemcpyDtoDAsyncFn g_cu_memcpy_dtod_async_v2 = nullptr;
+NvApiQueryInterfaceFn g_nvapi_query_interface = nullptr;
+NvApiDirectGetMethodFn g_nvapi_direct_get_method = nullptr;
+CuGraphicsMapResourcesFn g_cu_graphics_map_resources = nullptr;
+CuGraphicsMapResourcesFn g_cu_graphics_map_resources_ptsz = nullptr;
+CuGraphicsUnmapResourcesFn g_cu_graphics_unmap_resources = nullptr;
+CuGraphicsUnmapResourcesFn g_cu_graphics_unmap_resources_ptsz = nullptr;
+CuGraphicsSubResourceGetMappedArrayFn g_cu_graphics_subresource_get_mapped_array = nullptr;
+CuGraphicsResourceGetMappedPointerFn g_cu_graphics_resource_get_mapped_pointer = nullptr;
+CuGraphicsResourceGetMappedPointerFn g_cu_graphics_resource_get_mapped_pointer_v2 = nullptr;
+CuGraphicsResourceSetMapFlagsFn g_cu_graphics_resource_set_map_flags = nullptr;
+CuGraphicsUnregisterResourceFn g_cu_graphics_unregister_resource = nullptr;
 CuGetExportTableFn g_cu_get_export_table = nullptr;
 unsigned int g_cuda_module_index = 0;
 
@@ -546,6 +585,13 @@ struct DarkTableProxy {
     size_t bytes = 0;
     std::vector<void *> thunks;
 };
+struct DarkCallSample {
+    uintptr_t register_args[4]{};
+    uintptr_t stack_args[8]{};
+    uintptr_t extra_args[2]{};
+    uintptr_t return_address = 0;
+};
+static_assert(sizeof(DarkCallSample) == 0x78, "unexpected dark call sample layout");
 struct DarkCallRecord {
     volatile uint64_t count = 0;
     uintptr_t register_args[4]{};
@@ -561,8 +607,12 @@ struct DarkCallRecord {
     uintptr_t last_nonvolatile_args[8]{};
     uintptr_t last_extra_args[2]{};
     uintptr_t last_return_address = 0;
+    // The private CUDA table is not a documented ABI. Keep a bounded call
+    // sample ring in the trace record so a single first/last sample cannot
+    // hide per-kernel grid and resource changes.
+    DarkCallSample samples[1024]{};
 };
-static_assert(sizeof(DarkCallRecord) == 0x150, "unexpected dark call record layout");
+static_assert(offsetof(DarkCallRecord, samples) == 0x150, "unexpected dark sample offset");
 
 struct DarkTraceHeader {
     uint64_t magic = 0;
@@ -578,7 +628,7 @@ static_assert(sizeof(DarkTraceHeader) == 64, "unexpected dark trace header layou
 
 constexpr uint64_t kDarkTraceMagic = 0x4452434535444c53ull; // "SLD5ECRD"
 constexpr uint32_t kDarkTraceVersion = 1;
-constexpr size_t kDarkTraceMaxRecords = 1024;
+constexpr size_t kDarkTraceMaxRecords = 64;
 constexpr size_t kDarkTraceBytes = sizeof(DarkTraceHeader) +
                                     kDarkTraceMaxRecords * sizeof(DarkCallRecord);
 std::mutex g_dark_mutex;
@@ -1428,7 +1478,30 @@ void *make_dark_thunk(void *original, DarkCallRecord *record) {
     emit_u64(code, reinterpret_cast<uintptr_t>(record));
     code.insert(code.end(), {0x41, 0xbb, 0x01, 0x00, 0x00, 0x00}); // r11 = 1
     code.insert(code.end(), {0x4d, 0x0f, 0xc1, 0x5a, 0x00});       // old count -> r11
-    code.insert(code.end(), {0x4d, 0x85, 0xdb});                   // test r11,r11
+    // Record every call in a bounded ring. r11 is the old call count, and
+    // only volatile scratch registers are used so the private ABI survives.
+    code.insert(code.end(), {0x41, 0x81, 0xe3, 0xff, 0x03, 0x00, 0x00}); // r11 &= 1023
+    code.insert(code.end(), {0x4d, 0x69, 0xdb, 0x78, 0x00, 0x00, 0x00}); // r11 *= 0x78
+    code.insert(code.end(), {0x4b, 0x8d, 0x84, 0x1a, 0x50, 0x01, 0x00, 0x00}); // rax = record+0x150+r11
+    code.insert(code.end(), {0x48, 0x89, 0x08});                  // sample.rcx
+    code.insert(code.end(), {0x48, 0x89, 0x50, 0x08});            // sample.rdx
+    code.insert(code.end(), {0x4c, 0x89, 0x40, 0x10});            // sample.r8
+    code.insert(code.end(), {0x4c, 0x89, 0x48, 0x18});            // sample.r9
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x40});      // r11 = arg5
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x20});            // sample.arg5
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x48});      // r11 = arg6
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x28});            // sample.arg6
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x50});      // r11 = arg7
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x30});            // sample.arg7
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x58});      // r11 = arg8
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x38});            // sample.arg8
+    code.insert(code.end(), {0x4c, 0x8b, 0x1c, 0x24});            // r11 = original r11
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x60});            // sample.extra r11
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x08});      // r11 = original r10
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x68});            // sample.extra r10
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x18});      // r11 = return address
+    code.insert(code.end(), {0x4c, 0x89, 0x58, 0x70});            // sample.return
+    code.insert(code.end(), {0x49, 0x83, 0x7a, 0x00, 0x01});      // count == 1?
     code.insert(code.end(), {0x0f, 0x85});                         // jne skip_first_sample (rel32)
     const size_t skip_offset = code.size();
     code.insert(code.end(), {0, 0, 0, 0});
@@ -1596,6 +1669,23 @@ void dump_dark_records() {
               << address_module_base(entry->return_address);
             return s.str();
         });
+        for (size_t sample_index = 0; sample_index < 1024; ++sample_index) {
+            const DarkCallSample &sample = entry->samples[sample_index];
+            if (!sample.return_address) continue;
+            log([&] {
+                std::ostringstream s;
+                s << "dark_table_sample table=0x" << std::hex
+                  << reinterpret_cast<uintptr_t>(entry->table) << " index=" << std::dec
+                  << entry->index << " sample=" << sample_index << " regs=";
+                for (uintptr_t value : sample.register_args) s << "0x" << std::hex << value << ',';
+                s << " stack=";
+                for (uintptr_t value : sample.stack_args) s << "0x" << std::hex << value << ',';
+                s << " extra=0x" << sample.extra_args[0] << ",0x" << sample.extra_args[1]
+                  << " return=0x" << sample.return_address << " caller_module="
+                  << address_module(sample.return_address);
+                return s.str();
+            });
+        }
         char scan[4]{};
         char scan_all[4]{};
         const bool scan_enabled = GetEnvironmentVariableA("DLSS5_DARK_SCAN", scan, sizeof(scan)) > 0;
@@ -1692,6 +1782,315 @@ CUresult __stdcall hook_cu_launch_kernel(CUfunction function, unsigned int gx, u
     return g_cu_launch_kernel ? g_cu_launch_kernel(function, gx, gy, gz, bx, by, bz, shared, stream, args, extra) : 1;
 }
 
+CUresult __stdcall hook_cu_launch_kernel_ptsz(CUfunction function, unsigned int gx, unsigned int gy,
+                                              unsigned int gz, unsigned int bx, unsigned int by,
+                                              unsigned int bz, unsigned int shared, CUstream stream,
+                                              void **args, void **extra) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuLaunchKernel_ptsz function=0x" << std::hex << reinterpret_cast<uintptr_t>(function)
+          << " grid=" << std::dec << gx << ',' << gy << ',' << gz
+          << " block=" << bx << ',' << by << ',' << bz << " shared=" << shared
+          << " stream=0x" << std::hex << reinterpret_cast<uintptr_t>(stream)
+          << " args=0x" << reinterpret_cast<uintptr_t>(args)
+          << " extra=0x" << reinterpret_cast<uintptr_t>(extra);
+        return s.str();
+    });
+    return g_cu_launch_kernel_ptsz
+        ? g_cu_launch_kernel_ptsz(function, gx, gy, gz, bx, by, bz, shared, stream, args, extra)
+        : 1;
+}
+
+CUresult __stdcall hook_cu_launch(CUfunction function) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuLaunch function=0x" << std::hex << reinterpret_cast<uintptr_t>(function);
+        return s.str();
+    });
+    return g_cu_launch ? g_cu_launch(function) : 1;
+}
+
+CUresult __stdcall hook_cu_graph_launch(void *graph_exec, CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphLaunch graph_exec=0x" << std::hex << reinterpret_cast<uintptr_t>(graph_exec)
+          << " stream=0x" << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    return g_cu_graph_launch ? g_cu_graph_launch(graph_exec, stream) : 1;
+}
+
+void log_cuda_copy_host(const char *api, uint64_t destination, const void *source,
+                        size_t bytes, CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << api << " destination=0x" << std::hex << destination << " source=0x"
+          << reinterpret_cast<uintptr_t>(source) << " bytes=" << std::dec << bytes
+          << " stream=0x" << std::hex << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    if (!source || bytes == 0 || bytes > 0x4000) return;
+    std::vector<uint8_t> payload(bytes);
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), source, payload.data(), payload.size(), &copied) ||
+        copied != payload.size()) return;
+    std::ostringstream name;
+    name << "dlss5_cuda_host_copy_" << g_cuda_module_index++ << "_0x" << std::hex
+         << destination << '_' << std::dec << bytes << ".bin";
+    const bool written = write_runtime_binary(name.str(), payload.data(), payload.size());
+    log([&] {
+        std::ostringstream s;
+        s << "cuda_host_copy_written api=" << api << " file=" << name.str()
+          << " written=" << written << " bytes=" << std::dec << bytes;
+        return s.str();
+    });
+}
+
+CUresult __stdcall hook_cu_memcpy_htod(uint64_t destination, const void *source, size_t bytes) {
+    log_cuda_copy_host("cuMemcpyHtoD", destination, source, bytes, nullptr);
+    if (g_cu_memcpy_htod) return g_cu_memcpy_htod(destination, source, bytes);
+    if (g_cu_memcpy_htod_v2) return g_cu_memcpy_htod_v2(destination, source, bytes);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_htod_v2(uint64_t destination, const void *source, size_t bytes) {
+    log_cuda_copy_host("cuMemcpyHtoD_v2", destination, source, bytes, nullptr);
+    if (g_cu_memcpy_htod_v2) return g_cu_memcpy_htod_v2(destination, source, bytes);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_htod_async(uint64_t destination, const void *source,
+                                             size_t bytes, CUstream stream) {
+    log_cuda_copy_host("cuMemcpyHtoDAsync", destination, source, bytes, stream);
+    if (g_cu_memcpy_htod_async) return g_cu_memcpy_htod_async(destination, source, bytes, stream);
+    if (g_cu_memcpy_htod_async_v2)
+        return g_cu_memcpy_htod_async_v2(destination, source, bytes, stream);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_htod_async_v2(uint64_t destination, const void *source,
+                                                size_t bytes, CUstream stream) {
+    log_cuda_copy_host("cuMemcpyHtoDAsync_v2", destination, source, bytes, stream);
+    if (g_cu_memcpy_htod_async_v2)
+        return g_cu_memcpy_htod_async_v2(destination, source, bytes, stream);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_dtod(uint64_t destination, uint64_t source, size_t bytes) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuMemcpyDtoD destination=0x" << std::hex << destination << " source=0x"
+          << source << " bytes=" << std::dec << bytes;
+        return s.str();
+    });
+    if (g_cu_memcpy_dtod) return g_cu_memcpy_dtod(destination, source, bytes);
+    if (g_cu_memcpy_dtod_v2) return g_cu_memcpy_dtod_v2(destination, source, bytes);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_dtod_v2(uint64_t destination, uint64_t source, size_t bytes) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuMemcpyDtoD_v2 destination=0x" << std::hex << destination << " source=0x"
+          << source << " bytes=" << std::dec << bytes;
+        return s.str();
+    });
+    if (g_cu_memcpy_dtod_v2) return g_cu_memcpy_dtod_v2(destination, source, bytes);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_dtod_async(uint64_t destination, uint64_t source,
+                                              size_t bytes, CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuMemcpyDtoDAsync destination=0x" << std::hex << destination << " source=0x"
+          << source << " bytes=" << std::dec << bytes << " stream=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    if (g_cu_memcpy_dtod_async) return g_cu_memcpy_dtod_async(destination, source, bytes, stream);
+    if (g_cu_memcpy_dtod_async_v2)
+        return g_cu_memcpy_dtod_async_v2(destination, source, bytes, stream);
+    return 1;
+}
+
+CUresult __stdcall hook_cu_memcpy_dtod_async_v2(uint64_t destination, uint64_t source,
+                                                 size_t bytes, CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuMemcpyDtoDAsync_v2 destination=0x" << std::hex << destination << " source=0x"
+          << source << " bytes=" << std::dec << bytes << " stream=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    if (g_cu_memcpy_dtod_async_v2)
+        return g_cu_memcpy_dtod_async_v2(destination, source, bytes, stream);
+    return 1;
+}
+
+void *__stdcall hook_nvapi_query_interface(unsigned int id) {
+    void *result = g_nvapi_query_interface ? g_nvapi_query_interface(id) : nullptr;
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_QueryInterface id=0x" << std::hex << id << " result=0x"
+          << reinterpret_cast<uintptr_t>(result);
+        return s.str();
+    });
+    return result;
+}
+
+uintptr_t __stdcall hook_nvapi_direct_get_method(
+    uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3,
+    uintptr_t arg4, uintptr_t arg5, uintptr_t arg6, uintptr_t arg7) {
+    const uintptr_t result = g_nvapi_direct_get_method
+        ? g_nvapi_direct_get_method(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
+        : 0;
+    log([&] {
+        std::ostringstream s;
+        s << "nvapi_Direct_GetMethod args=0x" << std::hex << arg0 << ",0x" << arg1
+          << ",0x" << arg2 << ",0x" << arg3 << ",0x" << arg4 << ",0x" << arg5
+          << ",0x" << arg6 << ",0x" << arg7 << " result=0x" << result;
+        return s.str();
+    });
+    return result;
+}
+
+CUresult __stdcall hook_cu_graphics_map_resources(unsigned int count, void **resources,
+                                                   CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsMapResources count=" << std::dec << count << " resources=0x"
+          << std::hex << reinterpret_cast<uintptr_t>(resources) << " stream=0x"
+          << reinterpret_cast<uintptr_t>(stream) << " values=";
+        for (unsigned int i = 0; resources && i < count && i < 16; ++i)
+            s << "0x" << reinterpret_cast<uintptr_t>(resources[i]) << ',';
+        return s.str();
+    });
+    return g_cu_graphics_map_resources
+        ? g_cu_graphics_map_resources(count, resources, stream)
+        : (g_cu_graphics_map_resources_ptsz
+            ? g_cu_graphics_map_resources_ptsz(count, resources, stream)
+            : 1);
+}
+
+CUresult __stdcall hook_cu_graphics_map_resources_ptsz(unsigned int count, void **resources,
+                                                        CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsMapResources_ptsz count=" << std::dec << count << " resources=0x"
+          << std::hex << reinterpret_cast<uintptr_t>(resources) << " stream=0x"
+          << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    return g_cu_graphics_map_resources_ptsz
+        ? g_cu_graphics_map_resources_ptsz(count, resources, stream)
+        : 1;
+}
+
+CUresult __stdcall hook_cu_graphics_unmap_resources(unsigned int count, void **resources,
+                                                     CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsUnmapResources count=" << std::dec << count << " resources=0x"
+          << std::hex << reinterpret_cast<uintptr_t>(resources) << " stream=0x"
+          << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    return g_cu_graphics_unmap_resources
+        ? g_cu_graphics_unmap_resources(count, resources, stream)
+        : (g_cu_graphics_unmap_resources_ptsz
+            ? g_cu_graphics_unmap_resources_ptsz(count, resources, stream)
+            : 1);
+}
+
+CUresult __stdcall hook_cu_graphics_unmap_resources_ptsz(unsigned int count, void **resources,
+                                                          CUstream stream) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsUnmapResources_ptsz count=" << std::dec << count << " resources=0x"
+          << std::hex << reinterpret_cast<uintptr_t>(resources) << " stream=0x"
+          << reinterpret_cast<uintptr_t>(stream);
+        return s.str();
+    });
+    return g_cu_graphics_unmap_resources_ptsz
+        ? g_cu_graphics_unmap_resources_ptsz(count, resources, stream)
+        : 1;
+}
+
+CUresult __stdcall hook_cu_graphics_subresource_get_mapped_array(
+    void **array, void *resource, unsigned int array_index, unsigned int mip_level) {
+    const CUresult result = g_cu_graphics_subresource_get_mapped_array
+        ? g_cu_graphics_subresource_get_mapped_array(array, resource, array_index, mip_level)
+        : 1;
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsSubResourceGetMappedArray resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource) << " array_index=" << std::dec << array_index
+          << " mip_level=" << mip_level << " result=" << result << " array=0x"
+          << std::hex << (array ? reinterpret_cast<uintptr_t>(*array) : 0);
+        return s.str();
+    });
+    return result;
+}
+
+CUresult __stdcall hook_cu_graphics_resource_get_mapped_pointer(
+    uint64_t *pointer, size_t *size, void *resource) {
+    const CUresult result = g_cu_graphics_resource_get_mapped_pointer
+        ? g_cu_graphics_resource_get_mapped_pointer(pointer, size, resource)
+        : (g_cu_graphics_resource_get_mapped_pointer_v2
+            ? g_cu_graphics_resource_get_mapped_pointer_v2(pointer, size, resource)
+            : 1);
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsResourceGetMappedPointer resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource) << " result=" << std::dec << result
+          << " pointer=0x" << std::hex << (pointer ? *pointer : 0) << " size="
+          << std::dec << (size ? *size : 0);
+        return s.str();
+    });
+    return result;
+}
+
+CUresult __stdcall hook_cu_graphics_resource_get_mapped_pointer_v2(
+    uint64_t *pointer, size_t *size, void *resource) {
+    const CUresult result = g_cu_graphics_resource_get_mapped_pointer_v2
+        ? g_cu_graphics_resource_get_mapped_pointer_v2(pointer, size, resource)
+        : 1;
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsResourceGetMappedPointer_v2 resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource) << " result=" << std::dec << result
+          << " pointer=0x" << std::hex << (pointer ? *pointer : 0) << " size="
+          << std::dec << (size ? *size : 0);
+        return s.str();
+    });
+    return result;
+}
+
+CUresult __stdcall hook_cu_graphics_resource_set_map_flags(void *resource, unsigned int flags) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsResourceSetMapFlags resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource) << " flags=0x" << flags;
+        return s.str();
+    });
+    return g_cu_graphics_resource_set_map_flags
+        ? g_cu_graphics_resource_set_map_flags(resource, flags)
+        : 1;
+}
+
+CUresult __stdcall hook_cu_graphics_unregister_resource(void *resource) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuGraphicsUnregisterResource resource=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(resource);
+        return s.str();
+    });
+    return g_cu_graphics_unregister_resource
+        ? g_cu_graphics_unregister_resource(resource)
+        : 1;
+}
+
 CUresult __stdcall hook_cu_launch_kernel_ex(const CuLaunchConfig *config, CUfunction function,
                                             void **args, void **extra) {
     log([&] {
@@ -1722,6 +2121,28 @@ CUresult __stdcall hook_cu_launch_kernel_ex(const CuLaunchConfig *config, CUfunc
     return 1;
 }
 
+CUresult __stdcall hook_cu_launch_kernel_ex_ptsz(const CuLaunchConfig *config, CUfunction function,
+                                                 void **args, void **extra) {
+    log([&] {
+        std::ostringstream s;
+        s << "cuLaunchKernelEx_ptsz function=0x" << std::hex << reinterpret_cast<uintptr_t>(function);
+        if (config) {
+            s << " grid=" << std::dec << config->grid_x << ',' << config->grid_y << ',' << config->grid_z
+              << " block=" << config->block_x << ',' << config->block_y << ',' << config->block_z
+              << " shared=" << config->shared_bytes << " stream=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(config->stream) << " attributes=0x"
+              << reinterpret_cast<uintptr_t>(config->attributes) << " attribute_count="
+              << std::dec << config->attribute_count;
+        }
+        s << " args=0x" << std::hex << reinterpret_cast<uintptr_t>(args)
+          << " extra=0x" << reinterpret_cast<uintptr_t>(extra);
+        return s.str();
+    });
+    return g_cu_launch_kernel_ex_ptsz
+        ? g_cu_launch_kernel_ex_ptsz(config, function, args, extra)
+        : 1;
+}
+
 void hook_cuda_proc(const char *name, FARPROC address) {
     if (!name || !address) return;
     void *replacement = nullptr;
@@ -1742,8 +2163,74 @@ void hook_cuda_proc(const char *name, FARPROC address) {
         replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ex);
         original = reinterpret_cast<void **>(&g_cu_launch_kernel_ex);
     } else if (std::strcmp(name, "cuLaunchKernelEx_ptsz") == 0) {
-        replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ex);
+        replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ex_ptsz);
         original = reinterpret_cast<void **>(&g_cu_launch_kernel_ex_ptsz);
+    } else if (std::strcmp(name, "cuLaunchKernel_ptsz") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_launch_kernel_ptsz);
+        original = reinterpret_cast<void **>(&g_cu_launch_kernel_ptsz);
+    } else if (std::strcmp(name, "cuLaunch") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_launch);
+        original = reinterpret_cast<void **>(&g_cu_launch);
+    } else if (std::strcmp(name, "cuGraphLaunch") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graph_launch);
+        original = reinterpret_cast<void **>(&g_cu_graph_launch);
+    } else if (std::strcmp(name, "cuGraphicsMapResources") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_map_resources);
+        original = reinterpret_cast<void **>(&g_cu_graphics_map_resources);
+    } else if (std::strcmp(name, "cuGraphicsMapResources_ptsz") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_map_resources_ptsz);
+        original = reinterpret_cast<void **>(&g_cu_graphics_map_resources_ptsz);
+    } else if (std::strcmp(name, "cuGraphicsUnmapResources") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_unmap_resources);
+        original = reinterpret_cast<void **>(&g_cu_graphics_unmap_resources);
+    } else if (std::strcmp(name, "cuGraphicsUnmapResources_ptsz") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_unmap_resources_ptsz);
+        original = reinterpret_cast<void **>(&g_cu_graphics_unmap_resources_ptsz);
+    } else if (std::strcmp(name, "cuGraphicsSubResourceGetMappedArray") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_subresource_get_mapped_array);
+        original = reinterpret_cast<void **>(&g_cu_graphics_subresource_get_mapped_array);
+    } else if (std::strcmp(name, "cuGraphicsResourceGetMappedPointer") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_resource_get_mapped_pointer);
+        original = reinterpret_cast<void **>(&g_cu_graphics_resource_get_mapped_pointer);
+    } else if (std::strcmp(name, "cuGraphicsResourceGetMappedPointer_v2") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_resource_get_mapped_pointer_v2);
+        original = reinterpret_cast<void **>(&g_cu_graphics_resource_get_mapped_pointer_v2);
+    } else if (std::strcmp(name, "cuGraphicsResourceSetMapFlags") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_resource_set_map_flags);
+        original = reinterpret_cast<void **>(&g_cu_graphics_resource_set_map_flags);
+    } else if (std::strcmp(name, "cuGraphicsUnregisterResource") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_graphics_unregister_resource);
+        original = reinterpret_cast<void **>(&g_cu_graphics_unregister_resource);
+    } else if (std::strcmp(name, "cuMemcpyHtoD") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_htod);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_htod);
+    } else if (std::strcmp(name, "cuMemcpyHtoD_v2") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_htod_v2);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_htod_v2);
+    } else if (std::strcmp(name, "cuMemcpyHtoDAsync") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_htod_async);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_htod_async);
+    } else if (std::strcmp(name, "cuMemcpyHtoDAsync_v2") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_htod_async_v2);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_htod_async_v2);
+    } else if (std::strcmp(name, "cuMemcpyDtoD") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_dtod);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_dtod);
+    } else if (std::strcmp(name, "cuMemcpyDtoD_v2") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_dtod_v2);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_dtod_v2);
+    } else if (std::strcmp(name, "cuMemcpyDtoDAsync") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_dtod_async);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_dtod_async);
+    } else if (std::strcmp(name, "cuMemcpyDtoDAsync_v2") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_cu_memcpy_dtod_async_v2);
+        original = reinterpret_cast<void **>(&g_cu_memcpy_dtod_async_v2);
+    } else if (std::strcmp(name, "nvapi_QueryInterface") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_nvapi_query_interface);
+        original = reinterpret_cast<void **>(&g_nvapi_query_interface);
+    } else if (std::strcmp(name, "nvapi_Direct_GetMethod") == 0) {
+        replacement = reinterpret_cast<void *>(&hook_nvapi_direct_get_method);
+        original = reinterpret_cast<void **>(&g_nvapi_direct_get_method);
     } else if (std::strcmp(name, "cuGetExportTable") == 0) {
         replacement = reinterpret_cast<void *>(&hook_cu_get_export_table);
         original = reinterpret_cast<void **>(&g_cu_get_export_table);
@@ -1774,6 +2261,13 @@ void hook_cuda_module(HMODULE module) {
         "cuModuleGetFunction", "cuModuleUnload", "cuLaunch", "cuLaunchKernel",
         "cuLaunchKernel_ptsz", "cuLaunchKernelEx", "cuLaunchKernelEx_ptsz",
         "cuGraphLaunch", "cuStreamSynchronize", "cuCtxSynchronize",
+        "cuGraphicsMapResources", "cuGraphicsMapResources_ptsz",
+        "cuGraphicsUnmapResources", "cuGraphicsUnmapResources_ptsz",
+        "cuGraphicsSubResourceGetMappedArray", "cuGraphicsResourceGetMappedPointer",
+        "cuGraphicsResourceGetMappedPointer_v2", "cuGraphicsResourceSetMapFlags",
+        "cuGraphicsUnregisterResource",
+        "cuMemcpyHtoD", "cuMemcpyHtoD_v2", "cuMemcpyHtoDAsync", "cuMemcpyHtoDAsync_v2",
+        "cuMemcpyDtoD", "cuMemcpyDtoD_v2", "cuMemcpyDtoDAsync", "cuMemcpyDtoDAsync_v2",
     };
     for (const char *name : names) {
         const FARPROC address = g_get_proc_address(module, name);
