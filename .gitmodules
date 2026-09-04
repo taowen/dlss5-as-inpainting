@@ -7,3 +7,6 @@
 [submodule "third_party/cubit"]
 	path = third_party/cubit
 	url = https://github.com/kacper-daftcode/cubit.git
+[submodule "third_party/reshade"]
+	path = third_party/reshade
+	url = https://github.com/crosire/reshade.git

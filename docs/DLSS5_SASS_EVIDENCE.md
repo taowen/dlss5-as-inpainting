@@ -181,3 +181,28 @@ The initial `TEX` at `0x0620` remains active: changing its mask from `0x7` to
 reconstruction target to the initial read plus the two active later reads for
 the current path; static instruction presence alone is not enough to choose
 the feature lanes.
+
+## Graphics-side capture boundary
+
+`third_party/reshade` is pinned as a reproducible source dependency and
+`tools/build_dlss5_reshade_capture.ps1` builds
+`dlss5_reshade_capture.addon64`. The add-on records D3D12 resource creation,
+resource-view creation, GPU virtual addresses for buffers, and the available
+ReShade command-list events. On the RTX 5080 it loaded beside the working
+carrier and recorded the internal buffer allocation set, including the
+256²/512²/6 MiB/5 MiB scratch buffers used around the neural pass.
+
+The same run produced no ReShade `dispatch`, pipeline, descriptor-table, or
+push-constant callbacks for the DLSS5 neural work. This is an important
+boundary result: the carrier allocates/interposes resources through D3D12, but
+the actual NGX neural submission is below the ordinary ReShade command-list
+event layer. Consequently an add-on cannot yet append a legal copy of the
+pre-block shared tile, and the earlier `STS -> STG` experiment faulted the GPU
+at warm-up because it wrote through an address/descriptor that is not a valid
+telemetry target at that point.
+
+The remaining exact-conversion task is therefore a driver/NGX-level capture
+or a valid host-provided scratch binding. The PyTorch graph remains executable
+on the 5080, but its default RGB path is explicitly a zero-front fallback; it
+must not be described as bit-exact DLSS5 or as a recovered image-to-image
+generator until the pre texture/front tensor is captured or its ABI is proved.
