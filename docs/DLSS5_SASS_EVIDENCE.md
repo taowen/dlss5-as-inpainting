@@ -79,3 +79,20 @@ validated on our extracted CUBIN with a no-op round-trip, then used to insert
 a debug store only in a disposable copy. Any patched kernel must be validated
 with an independent disassembly and a 5080 numeric probe; SASS scheduling and
 hidden ABI metadata are part of correctness.
+
+## CUPTI capture result on this machine
+
+The repository now contains `tools/cupti_capture`, a small Windows DLL that
+uses `CUDA_INJECTION64_PATH` and records module-load/kernel-launch callbacks
+without linking against a full CUDA Toolkit. It was built against the official
+CUDA 13.3 CUPTI/runtime wheels and tested on the RTX 5080 (driver 616.56): a
+PyTorch CUDA process produced four module callbacks, with captured CUBIN sizes
+`735,536`, `13,616`, `2,421,144`, and `7,485,344` bytes.
+
+The same injection was tested against the working DLSS5 D3D12/ReShade harness.
+It produced no module callback and caused `DXGI_ERROR_DEVICE_REMOVED`
+(`0x887a0005`) on the first contract upload. A no-op injection DLL produced the
+same failure, so this is a carrier/injection incompatibility rather than a
+callback-body bug. The native harness remains usable without the injection;
+the capture implementation is retained as a verified CUDA-client probe and as
+the template for a future in-process or Linux capture route.
