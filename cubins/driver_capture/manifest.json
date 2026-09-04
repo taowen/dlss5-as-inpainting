@@ -1,0 +1,18 @@
+{
+  "artifact": "cuda_clear_buffer_kernel",
+  "source": "RTX 5080 native DLSS5 driver private export-table hook",
+  "runtime_snippet": "bin/nvngx_dlssnr.dll",
+  "runtime_snippet_sha256": "6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927",
+  "wrapper_file": "cuda_clear_buffer_sm75.wrapper.bin",
+  "wrapper_magic": "50ed55ba",
+  "wrapper_bytes": 15656,
+  "wrapper_declared_bytes": 15656,
+  "elf_offset": 80,
+  "cubin_file": "cuda_clear_buffer_sm75.cubin",
+  "cubin_bytes": 15576,
+  "cubin_sha256": "88B93A6944127D6FB042B5DB7A288FBEB8317C3ADBE0BB42ACF1ADF8437C4886",
+  "wrapper_sha256": "D3DD26C7F14C1E701256372C3B96F30A54D2C17FF3F6C96CEE7FE349A723F216",
+  "detected_architecture": "sm_75",
+  "kernel": "cuda_clear_buffer_kernel",
+  "note": "This is a driver utility CUBIN, not the embedded DLSS5 neural pre kernel."
+}

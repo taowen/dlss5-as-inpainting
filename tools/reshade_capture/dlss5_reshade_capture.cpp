@@ -11,13 +11,12 @@
 #include <atomic>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <cstring>
 #include <memory>
-#include <thread>
-#include <chrono>
 #include <vector>
 
 using namespace reshade::api;
@@ -46,6 +45,28 @@ CuModuleGetFunctionFn g_cu_module_get_function = nullptr;
 CuLaunchKernelFn g_cu_launch_kernel = nullptr;
 CuGetExportTableFn g_cu_get_export_table = nullptr;
 unsigned int g_cuda_module_index = 0;
+
+using D3D12DispatchFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, UINT, UINT);
+using D3D12SetPipelineStateFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12PipelineState *);
+using D3D12SetComputeRootSignatureFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, ID3D12RootSignature *);
+using D3D12SetComputeRootDescriptorTableFn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList *, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
+using D3D12CreateComputePipelineStateFn = HRESULT(STDMETHODCALLTYPE *)(
+    ID3D12Device *, const D3D12_COMPUTE_PIPELINE_STATE_DESC *, REFIID, void **);
+using D3D12CreateDescriptorHeapFn = HRESULT(STDMETHODCALLTYPE *)(
+    ID3D12Device *, const D3D12_DESCRIPTOR_HEAP_DESC *, REFIID, void **);
+using D3D12CreateShaderResourceViewFn = void(STDMETHODCALLTYPE *)(
+    ID3D12Device *, ID3D12Resource *, const D3D12_SHADER_RESOURCE_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
+using D3D12CreateUnorderedAccessViewFn = void(STDMETHODCALLTYPE *)(
+    ID3D12Device *, ID3D12Resource *, ID3D12Resource *, const D3D12_UNORDERED_ACCESS_VIEW_DESC *, D3D12_CPU_DESCRIPTOR_HANDLE);
+D3D12DispatchFn g_d3d12_dispatch = nullptr;
+D3D12SetPipelineStateFn g_d3d12_set_pipeline_state = nullptr;
+D3D12SetComputeRootSignatureFn g_d3d12_set_compute_root_signature = nullptr;
+D3D12SetComputeRootDescriptorTableFn g_d3d12_set_compute_root_descriptor_table = nullptr;
+D3D12CreateComputePipelineStateFn g_d3d12_create_compute_pipeline_state = nullptr;
+D3D12CreateDescriptorHeapFn g_d3d12_create_descriptor_heap = nullptr;
+D3D12CreateShaderResourceViewFn g_d3d12_create_shader_resource_view = nullptr;
+D3D12CreateUnorderedAccessViewFn g_d3d12_create_unordered_access_view = nullptr;
+unsigned int g_d3d12_pso_index = 0;
 struct DarkTableProxy {
     void *original = nullptr;
     void *replacement = nullptr;
@@ -62,13 +83,41 @@ struct DarkCallRecord {
     uintptr_t nonvolatile_args[8]{}; // rbx, rbp, rsi, rdi, r12-r15
     uintptr_t extra_args[2]{};       // r10, r11
     uintptr_t return_address = 0;
+    uintptr_t last_register_args[4]{};
+    uintptr_t last_stack_args[4]{};
+    uintptr_t last_nonvolatile_args[8]{};
+    uintptr_t last_extra_args[2]{};
+    uintptr_t last_return_address = 0;
 };
+static_assert(sizeof(DarkCallRecord) == 0x150, "unexpected dark call record layout");
+
+struct DarkTraceHeader {
+    uint64_t magic = 0;
+    uint32_t version = 0;
+    uint32_t header_bytes = 0;
+    uint32_t pid = 0;
+    uint32_t max_records = 0;
+    uint64_t record_bytes = 0;
+    uint64_t record_count = 0;
+    uint64_t reserved[3]{};
+};
+static_assert(sizeof(DarkTraceHeader) == 64, "unexpected dark trace header layout");
+
+constexpr uint64_t kDarkTraceMagic = 0x4452434535444c53ull; // "SLD5ECRD"
+constexpr uint32_t kDarkTraceVersion = 1;
+constexpr size_t kDarkTraceMaxRecords = 1024;
+constexpr size_t kDarkTraceBytes = sizeof(DarkTraceHeader) +
+                                    kDarkTraceMaxRecords * sizeof(DarkCallRecord);
 std::mutex g_dark_mutex;
 std::vector<DarkTableProxy> g_dark_tables;
-std::vector<std::unique_ptr<DarkCallRecord>> g_dark_records;
-std::atomic_bool g_dump_stop{false};
-std::atomic_bool g_dump_emitted{false};
-std::thread g_dump_thread;
+std::vector<DarkCallRecord *> g_dark_records;
+std::vector<std::unique_ptr<DarkCallRecord>> g_dark_owned_records;
+HANDLE g_dark_trace_file = INVALID_HANDLE_VALUE;
+HANDLE g_dark_trace_mapping = nullptr;
+void *g_dark_trace_view = nullptr;
+DarkTraceHeader *g_dark_trace_header = nullptr;
+size_t g_dark_trace_record_cursor = 0;
+unsigned int g_dark_blob_index = 0;
 
 using GetProcAddressFn = FARPROC(WINAPI *)(HMODULE, LPCSTR);
 using LoadLibraryExWFn = HMODULE(WINAPI *)(LPCWSTR, HANDLE, DWORD);
@@ -189,7 +238,9 @@ void dump_cuda_image(const char *api, const void *image) {
     name << "dlss5_cuda_module_" << g_cuda_module_index++ << ".cubin";
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_log.is_open()) open_log();
-    std::wstring full = module_name(nullptr);
+    wchar_t executable_path[MAX_PATH]{};
+    const DWORD executable_length = GetModuleFileNameW(nullptr, executable_path, MAX_PATH);
+    std::wstring full(executable_path, executable_length);
     const size_t slash = full.find_last_of(L"\\/");
     if (slash != std::wstring::npos) full.resize(slash + 1);
     const std::string file_name = name.str();
@@ -210,6 +261,374 @@ void dump_dark_memory(const char *api, uintptr_t value) {
           << " data=" << hex_bytes(bytes, copied);
         return s.str();
     });
+}
+
+void dump_dark_binary(const char *api, uintptr_t value) {
+    if (value < 0x10000) return;
+
+    const uint8_t elf_magic[4] = {0x7f, 'E', 'L', 'F'};
+    const uint8_t bundle_magic[4] = {0x50, 0xed, 0x55, 0xba};
+    uint8_t prefix[0x100]{};
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(value),
+                           prefix, sizeof(prefix), &copied) || copied < 4) return;
+
+    size_t image_offset = 0;
+    size_t blob_size = 0;
+    if (std::memcmp(prefix, elf_magic, sizeof(elf_magic)) == 0) {
+        image_offset = 0;
+    } else if (copied >= 0x54 && std::memcmp(prefix, bundle_magic, sizeof(bundle_magic)) == 0 &&
+               std::memcmp(prefix + 0x50, elf_magic, sizeof(elf_magic)) == 0) {
+        image_offset = 0x50;
+        uint64_t declared_size = 0;
+        std::memcpy(&declared_size, prefix + 8, sizeof(declared_size));
+        if (declared_size >= image_offset + 4 && declared_size <= 0x4000000)
+            blob_size = static_cast<size_t>(declared_size);
+    } else {
+        return;
+    }
+
+    if (blob_size == 0) {
+        const size_t image_size = guess_elf_size(reinterpret_cast<const uint8_t *>(value) + image_offset);
+        if (image_size == 0 || image_size > 0x4000000 || image_offset + image_size > 0x4000000) return;
+        blob_size = image_offset + image_size;
+    }
+    std::vector<uint8_t> blob(blob_size);
+    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void *>(value),
+                           blob.data(), blob.size(), &copied) || copied != blob.size()) return;
+
+    std::ostringstream name;
+    name << "dlss5_dark_blob_" << GetCurrentProcessId() << '_' << g_dark_blob_index++ << ".bin";
+    const std::string file_name = name.str();
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (!g_log.is_open()) open_log();
+        wchar_t executable_path[MAX_PATH]{};
+        const DWORD executable_length = GetModuleFileNameW(nullptr, executable_path, MAX_PATH);
+        std::wstring full(executable_path, executable_length);
+        const size_t slash = full.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) full.resize(slash + 1);
+        full += std::wstring(file_name.begin(), file_name.end());
+        std::ofstream out(full, std::ios::binary | std::ios::trunc);
+        if (out) out.write(reinterpret_cast<const char *>(blob.data()), static_cast<std::streamsize>(blob.size()));
+    }
+    log([&] {
+        std::ostringstream s;
+        s << "dark_binary_dump api=" << api << " ptr=0x" << std::hex << value
+          << " image_offset=0x" << image_offset << " bytes=" << std::dec << blob.size()
+          << " file=" << file_name;
+        return s.str();
+    });
+}
+
+void init_dark_trace() {
+    if (g_dark_trace_view) return;
+
+    wchar_t path[MAX_PATH]{};
+    const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    std::wstring full(path, n);
+    const size_t slash = full.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) full.resize(slash + 1);
+    full += L"dlss5_driver_trace_";
+    full += std::to_wstring(GetCurrentProcessId());
+    full += L".bin";
+
+    g_dark_trace_file = CreateFileW(full.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (g_dark_trace_file == INVALID_HANDLE_VALUE) {
+        log([&] { return std::string("dark_trace_file_failed error=") + std::to_string(GetLastError()); });
+        return;
+    }
+
+    LARGE_INTEGER size{};
+    size.QuadPart = static_cast<LONGLONG>(kDarkTraceBytes);
+    if (!SetFilePointerEx(g_dark_trace_file, size, nullptr, FILE_BEGIN) || !SetEndOfFile(g_dark_trace_file)) {
+        log([&] { return std::string("dark_trace_resize_failed error=") + std::to_string(GetLastError()); });
+        CloseHandle(g_dark_trace_file);
+        g_dark_trace_file = INVALID_HANDLE_VALUE;
+        return;
+    }
+
+    g_dark_trace_mapping = CreateFileMappingW(g_dark_trace_file, nullptr, PAGE_READWRITE, 0,
+                                               static_cast<DWORD>(kDarkTraceBytes), nullptr);
+    if (!g_dark_trace_mapping) {
+        log([&] { return std::string("dark_trace_mapping_failed error=") + std::to_string(GetLastError()); });
+        CloseHandle(g_dark_trace_file);
+        g_dark_trace_file = INVALID_HANDLE_VALUE;
+        return;
+    }
+    g_dark_trace_view = MapViewOfFile(g_dark_trace_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, kDarkTraceBytes);
+    if (!g_dark_trace_view) {
+        log([&] { return std::string("dark_trace_map_failed error=") + std::to_string(GetLastError()); });
+        CloseHandle(g_dark_trace_mapping);
+        CloseHandle(g_dark_trace_file);
+        g_dark_trace_mapping = nullptr;
+        g_dark_trace_file = INVALID_HANDLE_VALUE;
+        return;
+    }
+    std::memset(g_dark_trace_view, 0, kDarkTraceBytes);
+    g_dark_trace_header = static_cast<DarkTraceHeader *>(g_dark_trace_view);
+    g_dark_trace_header->magic = kDarkTraceMagic;
+    g_dark_trace_header->version = kDarkTraceVersion;
+    g_dark_trace_header->header_bytes = sizeof(DarkTraceHeader);
+    g_dark_trace_header->pid = GetCurrentProcessId();
+    g_dark_trace_header->max_records = static_cast<uint32_t>(kDarkTraceMaxRecords);
+    g_dark_trace_header->record_bytes = sizeof(DarkCallRecord);
+    FlushViewOfFile(g_dark_trace_view, sizeof(DarkTraceHeader));
+    log([&] {
+        std::ostringstream s;
+        s << "dark_trace_file path=" << narrow(full.c_str()) << " bytes=" << std::dec << kDarkTraceBytes;
+        return s.str();
+    });
+}
+
+void close_dark_trace() {
+    if (g_dark_trace_view) {
+        if (g_dark_trace_header) g_dark_trace_header->record_count = g_dark_trace_record_cursor;
+        FlushViewOfFile(g_dark_trace_view, 0);
+        UnmapViewOfFile(g_dark_trace_view);
+        g_dark_trace_view = nullptr;
+        g_dark_trace_header = nullptr;
+    }
+    if (g_dark_trace_mapping) {
+        CloseHandle(g_dark_trace_mapping);
+        g_dark_trace_mapping = nullptr;
+    }
+    if (g_dark_trace_file != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_dark_trace_file);
+        g_dark_trace_file = INVALID_HANDLE_VALUE;
+    }
+}
+
+bool write_runtime_binary(const std::string &file_name, const void *data, size_t bytes) {
+    if (!data || bytes == 0 || bytes > 0x4000000) return false;
+    wchar_t executable_path[MAX_PATH]{};
+    const DWORD executable_length = GetModuleFileNameW(nullptr, executable_path, MAX_PATH);
+    if (executable_length == 0 || executable_length >= MAX_PATH) return false;
+    std::wstring full(executable_path, executable_length);
+    const size_t slash = full.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) full.resize(slash + 1);
+    full += std::wstring(file_name.begin(), file_name.end());
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::ofstream out(full, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(static_cast<const char *>(data), static_cast<std::streamsize>(bytes));
+    return out.good();
+}
+
+void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT x, UINT y, UINT z) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_dispatch list=0x" << std::hex << reinterpret_cast<uintptr_t>(list)
+          << " groups=" << std::dec << x << ',' << y << ',' << z;
+        return s.str();
+    });
+    if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
+}
+
+void STDMETHODCALLTYPE hook_d3d12_set_pipeline_state(ID3D12GraphicsCommandList *list,
+                                                      ID3D12PipelineState *pipeline) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_set_pipeline_state list=0x" << std::hex << reinterpret_cast<uintptr_t>(list)
+          << " pipeline=0x" << reinterpret_cast<uintptr_t>(pipeline);
+        return s.str();
+    });
+    if (g_d3d12_set_pipeline_state) g_d3d12_set_pipeline_state(list, pipeline);
+}
+
+void STDMETHODCALLTYPE hook_d3d12_set_compute_root_signature(ID3D12GraphicsCommandList *list,
+                                                               ID3D12RootSignature *signature) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_set_compute_root_signature list=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(list) << " signature=0x"
+          << reinterpret_cast<uintptr_t>(signature);
+        return s.str();
+    });
+    if (g_d3d12_set_compute_root_signature) g_d3d12_set_compute_root_signature(list, signature);
+}
+
+void STDMETHODCALLTYPE hook_d3d12_set_compute_root_descriptor_table(
+    ID3D12GraphicsCommandList *list, UINT index, D3D12_GPU_DESCRIPTOR_HANDLE handle) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_set_compute_root_descriptor_table list=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(list) << " index=" << std::dec << index
+          << " gpu_handle=0x" << std::hex << handle.ptr;
+        return s.str();
+    });
+    if (g_d3d12_set_compute_root_descriptor_table)
+        g_d3d12_set_compute_root_descriptor_table(list, index, handle);
+}
+
+HRESULT STDMETHODCALLTYPE hook_d3d12_create_compute_pipeline_state(
+    ID3D12Device *device, const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc,
+    REFIID riid, void **result) {
+    const size_t shader_bytes = desc ? static_cast<size_t>(desc->CS.BytecodeLength) : 0;
+    const void *shader = desc ? desc->CS.pShaderBytecode : nullptr;
+    const unsigned int index = g_d3d12_pso_index++;
+    std::ostringstream name;
+    name << "dlss5_d3d12_cs_" << GetCurrentProcessId() << '_' << index << ".dxil";
+    const bool dumped = write_runtime_binary(name.str(), shader, shader_bytes);
+    const HRESULT hr = g_d3d12_create_compute_pipeline_state
+        ? g_d3d12_create_compute_pipeline_state(device, desc, riid, result)
+        : E_FAIL;
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_create_compute_pso device=0x" << std::hex
+          << reinterpret_cast<uintptr_t>(device) << " result=0x"
+          << static_cast<unsigned long>(hr) << " pso=0x"
+          << (result ? reinterpret_cast<uintptr_t>(*result) : 0)
+          << " root_signature=0x" << (desc ? reinterpret_cast<uintptr_t>(desc->pRootSignature) : 0)
+          << " cs=0x" << reinterpret_cast<uintptr_t>(shader)
+          << " cs_bytes=" << std::dec << shader_bytes << " dumped=" << dumped
+          << " file=" << name.str();
+        return s.str();
+    });
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE hook_d3d12_create_descriptor_heap(
+    ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc,
+    REFIID riid, void **result) {
+    const HRESULT hr = g_d3d12_create_descriptor_heap
+        ? g_d3d12_create_descriptor_heap(device, desc, riid, result)
+        : E_FAIL;
+    if (SUCCEEDED(hr) && result && *result && desc) {
+        auto *heap = reinterpret_cast<ID3D12DescriptorHeap *>(*result);
+        const D3D12_CPU_DESCRIPTOR_HANDLE cpu = heap->GetCPUDescriptorHandleForHeapStart();
+        const D3D12_GPU_DESCRIPTOR_HANDLE gpu = heap->GetGPUDescriptorHandleForHeapStart();
+        const UINT increment = device->GetDescriptorHandleIncrementSize(desc->Type);
+        log([&] {
+            std::ostringstream s;
+            s << "d3d12_create_descriptor_heap heap=0x" << std::hex
+              << reinterpret_cast<uintptr_t>(heap) << " type=" << std::dec << uint32_t(desc->Type)
+              << " flags=0x" << uint32_t(desc->Flags) << " descriptors=" << desc->NumDescriptors
+              << " increment=" << increment << " cpu_start=0x" << std::hex << cpu.ptr
+              << " gpu_start=0x" << gpu.ptr;
+            return s.str();
+        });
+    }
+    return hr;
+}
+
+void STDMETHODCALLTYPE hook_d3d12_create_shader_resource_view(
+    ID3D12Device *device, ID3D12Resource *resource,
+    const D3D12_SHADER_RESOURCE_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_create_srv resource=0x" << std::hex << reinterpret_cast<uintptr_t>(resource)
+          << " cpu_handle=0x" << handle.ptr;
+        if (desc) s << " format=" << std::dec << uint32_t(desc->Format)
+                    << " dimension=" << uint32_t(desc->ViewDimension);
+        return s.str();
+    });
+    if (g_d3d12_create_shader_resource_view)
+        g_d3d12_create_shader_resource_view(device, resource, desc, handle);
+}
+
+void STDMETHODCALLTYPE hook_d3d12_create_unordered_access_view(
+    ID3D12Device *device, ID3D12Resource *resource, ID3D12Resource *counter,
+    const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+    log([&] {
+        std::ostringstream s;
+        s << "d3d12_create_uav resource=0x" << std::hex << reinterpret_cast<uintptr_t>(resource)
+          << " counter=0x" << reinterpret_cast<uintptr_t>(counter)
+          << " cpu_handle=0x" << handle.ptr;
+        if (desc) s << " format=" << std::dec << uint32_t(desc->Format)
+                    << " dimension=" << uint32_t(desc->ViewDimension);
+        return s.str();
+    });
+    if (g_d3d12_create_unordered_access_view)
+        g_d3d12_create_unordered_access_view(device, resource, counter, desc, handle);
+}
+
+void install_d3d12_command_list_hooks(command_list *cmd_list) {
+    if (!cmd_list || cmd_list->get_device()->get_api() != device_api::d3d12) return;
+    auto *native = reinterpret_cast<ID3D12GraphicsCommandList *>(cmd_list->get_native());
+    if (!native) return;
+    auto **vtable = *reinterpret_cast<void ***>(native);
+    struct Method {
+        size_t index;
+        const char *name;
+        void *replacement;
+        void **original;
+    } methods[] = {
+        {14, "Dispatch", reinterpret_cast<void *>(&hook_d3d12_dispatch),
+         reinterpret_cast<void **>(&g_d3d12_dispatch)},
+        {25, "SetPipelineState", reinterpret_cast<void *>(&hook_d3d12_set_pipeline_state),
+         reinterpret_cast<void **>(&g_d3d12_set_pipeline_state)},
+        {29, "SetComputeRootSignature", reinterpret_cast<void *>(&hook_d3d12_set_compute_root_signature),
+         reinterpret_cast<void **>(&g_d3d12_set_compute_root_signature)},
+        {31, "SetComputeRootDescriptorTable",
+         reinterpret_cast<void *>(&hook_d3d12_set_compute_root_descriptor_table),
+         reinterpret_cast<void **>(&g_d3d12_set_compute_root_descriptor_table)},
+    };
+    for (const Method &method : methods) {
+        if (!vtable[method.index]) continue;
+        const MH_STATUS status = MH_CreateHook(vtable[method.index], method.replacement,
+                                               reinterpret_cast<LPVOID *>(method.original));
+        if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
+            MH_EnableHook(vtable[method.index]);
+            log([&] {
+                std::ostringstream s;
+                s << "d3d12_hook_installed name=" << method.name << " target=0x" << std::hex
+                  << reinterpret_cast<uintptr_t>(vtable[method.index]);
+                return s.str();
+            });
+        } else {
+            log([&] {
+                std::ostringstream s;
+                s << "d3d12_hook_failed name=" << method.name << " status=" << std::dec << int(status);
+                return s.str();
+            });
+        }
+    }
+}
+
+void install_d3d12_device_hooks(device *dev) {
+    if (!dev || dev->get_api() != device_api::d3d12) return;
+    auto *native = reinterpret_cast<ID3D12Device *>(dev->get_native());
+    if (!native) return;
+    auto **vtable = *reinterpret_cast<void ***>(native);
+    struct Method {
+        size_t index;
+        const char *name;
+        void *replacement;
+        void **original;
+    } methods[] = {
+        {11, "CreateComputePipelineState", reinterpret_cast<void *>(&hook_d3d12_create_compute_pipeline_state),
+         reinterpret_cast<void **>(&g_d3d12_create_compute_pipeline_state)},
+        {14, "CreateDescriptorHeap", reinterpret_cast<void *>(&hook_d3d12_create_descriptor_heap),
+         reinterpret_cast<void **>(&g_d3d12_create_descriptor_heap)},
+        {18, "CreateShaderResourceView", reinterpret_cast<void *>(&hook_d3d12_create_shader_resource_view),
+         reinterpret_cast<void **>(&g_d3d12_create_shader_resource_view)},
+        {19, "CreateUnorderedAccessView", reinterpret_cast<void *>(&hook_d3d12_create_unordered_access_view),
+         reinterpret_cast<void **>(&g_d3d12_create_unordered_access_view)},
+    };
+    for (const Method &method : methods) {
+        if (!vtable[method.index]) continue;
+        const MH_STATUS status = MH_CreateHook(vtable[method.index], method.replacement,
+                                               reinterpret_cast<LPVOID *>(method.original));
+        if (status == MH_OK || status == MH_ERROR_ALREADY_CREATED) {
+            MH_EnableHook(vtable[method.index]);
+            log([&] {
+                std::ostringstream s;
+                s << "d3d12_hook_installed name=" << method.name << " target=0x" << std::hex
+                  << reinterpret_cast<uintptr_t>(vtable[method.index]);
+                return s.str();
+            });
+        } else {
+            log([&] {
+                std::ostringstream s;
+                s << "d3d12_hook_failed name=" << method.name << " status=" << std::dec << int(status);
+                return s.str();
+            });
+        }
+    }
 }
 
 void emit_u64(std::vector<uint8_t> &code, uint64_t value) {
@@ -243,9 +662,9 @@ void *make_dark_thunk(void *original, DarkCallRecord *record) {
     code.insert(code.end(), {0x41, 0xbb, 0x01, 0x00, 0x00, 0x00}); // r11 = 1
     code.insert(code.end(), {0x4d, 0x0f, 0xc1, 0x5a, 0x00});       // old count -> r11
     code.insert(code.end(), {0x4d, 0x85, 0xdb});                   // test r11,r11
-    code.push_back(0x75);                                          // jne skip_first_sample
+    code.insert(code.end(), {0x0f, 0x85});                         // jne skip_first_sample (rel32)
     const size_t skip_offset = code.size();
-    code.push_back(0);
+    code.insert(code.end(), {0, 0, 0, 0});
     code.insert(code.end(), {0x49, 0x89, 0x4a, 0x08}); // [r10+08] = rcx
     code.insert(code.end(), {0x49, 0x89, 0x52, 0x10}); // [r10+10] = rdx
     code.insert(code.end(), {0x4d, 0x89, 0x42, 0x18}); // [r10+18] = r8
@@ -273,10 +692,39 @@ void *make_dark_thunk(void *original, DarkCallRecord *record) {
     code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x58}); // r11=[rsp+58]
     code.insert(code.end(), {0x4d, 0x89, 0x5a, 0x40}); // [r10+40] = arg8
     const size_t skip_target = code.size();
-    const size_t skip_distance = skip_target - (skip_offset + 1);
-    if (skip_distance > 127) return nullptr;
-    code[skip_offset] = static_cast<uint8_t>(skip_distance);
-    code.insert(code.end(), {0xf0, 0x49, 0xff, 0x42, 0x00}); // lock inc [r10]
+    const int64_t skip_distance = static_cast<int64_t>(skip_target) -
+                                  static_cast<int64_t>(skip_offset + sizeof(int32_t));
+    if (skip_distance < std::numeric_limits<int32_t>::min() ||
+        skip_distance > std::numeric_limits<int32_t>::max()) return nullptr;
+    const uint32_t encoded_distance = static_cast<uint32_t>(static_cast<int32_t>(skip_distance));
+    for (unsigned int i = 0; i < sizeof(int32_t); ++i)
+        code[skip_offset + i] = static_cast<uint8_t>(encoded_distance >> (i * 8));
+    code.insert(code.end(), {0x49, 0x89, 0x8a, 0xb8, 0x00, 0x00, 0x00}); // latest rcx
+    code.insert(code.end(), {0x49, 0x89, 0x92, 0xc0, 0x00, 0x00, 0x00}); // latest rdx
+    code.insert(code.end(), {0x4d, 0x89, 0x82, 0xc8, 0x00, 0x00, 0x00}); // latest r8
+    code.insert(code.end(), {0x4d, 0x89, 0x8a, 0xd0, 0x00, 0x00, 0x00}); // latest r9
+    code.insert(code.end(), {0x4c, 0x8b, 0x1c, 0x24}); // r11 = original r11
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0x38, 0x01, 0x00, 0x00}); // latest r11
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x08}); // r11 = original r10
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0x40, 0x01, 0x00, 0x00}); // latest r10
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x18}); // r11 = return address
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0x48, 0x01, 0x00, 0x00}); // latest return address
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x40}); // latest arg5
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0xd8, 0x00, 0x00, 0x00});
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x48}); // latest arg6
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0xe0, 0x00, 0x00, 0x00});
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x50}); // latest arg7
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0xe8, 0x00, 0x00, 0x00});
+    code.insert(code.end(), {0x4c, 0x8b, 0x5c, 0x24, 0x58}); // latest arg8
+    code.insert(code.end(), {0x4d, 0x89, 0x9a, 0xf0, 0x00, 0x00, 0x00});
+    code.insert(code.end(), {0x49, 0x89, 0x9a, 0xf8, 0x00, 0x00, 0x00}); // latest rbx
+    code.insert(code.end(), {0x49, 0x89, 0xaa, 0x00, 0x01, 0x00, 0x00}); // latest rbp
+    code.insert(code.end(), {0x49, 0x89, 0xb2, 0x08, 0x01, 0x00, 0x00}); // latest rsi
+    code.insert(code.end(), {0x49, 0x89, 0xba, 0x10, 0x01, 0x00, 0x00}); // latest rdi
+    code.insert(code.end(), {0x4d, 0x89, 0xa2, 0x18, 0x01, 0x00, 0x00}); // latest r12
+    code.insert(code.end(), {0x4d, 0x89, 0xaa, 0x20, 0x01, 0x00, 0x00}); // latest r13
+    code.insert(code.end(), {0x4d, 0x89, 0xb2, 0x28, 0x01, 0x00, 0x00}); // latest r14
+    code.insert(code.end(), {0x4d, 0x89, 0xba, 0x30, 0x01, 0x00, 0x00}); // latest r15
     code.insert(code.end(), {0x41, 0x5b});             // pop r11
     code.insert(code.end(), {0x41, 0x5a});             // pop r10
     code.insert(code.end(), {0x58});                   // pop rax
@@ -327,12 +775,21 @@ void proxy_dark_table(const void **table_address, const void *uuid) {
     proxy.thunks.resize(entries, nullptr);
     for (size_t i = 1; i < entries; ++i) {
         void *entry = reinterpret_cast<void *>(original[i]);
-        auto record = std::make_unique<DarkCallRecord>();
-        record->table = replacement;
-        record->index = i;
-        record->original = entry;
-        DarkCallRecord *record_ptr = record.get();
-        g_dark_records.push_back(std::move(record));
+        DarkCallRecord *record_ptr = nullptr;
+        if (g_dark_trace_view && g_dark_trace_record_cursor < kDarkTraceMaxRecords) {
+            auto *records = reinterpret_cast<DarkCallRecord *>(
+                static_cast<uint8_t *>(g_dark_trace_view) + sizeof(DarkTraceHeader));
+            record_ptr = &records[g_dark_trace_record_cursor++];
+            std::memset(record_ptr, 0, sizeof(*record_ptr));
+        } else {
+            auto record = std::make_unique<DarkCallRecord>();
+            record_ptr = record.get();
+            g_dark_owned_records.push_back(std::move(record));
+        }
+        record_ptr->table = replacement;
+        record_ptr->index = i;
+        record_ptr->original = entry;
+        g_dark_records.push_back(record_ptr);
         void *thunk = make_dark_thunk(entry, record_ptr);
         if (thunk) {
             replacement[i] = reinterpret_cast<uintptr_t>(thunk);
@@ -349,10 +806,11 @@ void proxy_dark_table(const void **table_address, const void *uuid) {
         return s.str();
     });
     g_dark_tables.push_back(std::move(proxy));
+    if (g_dark_trace_header) g_dark_trace_header->record_count = g_dark_trace_record_cursor;
 }
 
 void dump_dark_records() {
-    for (const auto &entry : g_dark_records) {
+    for (const DarkCallRecord *entry : g_dark_records) {
         if (entry->count == 0) continue;
         log([&] {
             std::ostringstream s;
@@ -372,33 +830,20 @@ void dump_dark_records() {
             return s.str();
         });
         char scan[4]{};
-        if (GetEnvironmentVariableA("DLSS5_DARK_SCAN", scan, sizeof(scan)) > 0 &&
-            (entry->index == 12 || entry->index == 50)) {
-            for (uintptr_t value : entry->register_args) dump_dark_memory("dark_table_memory", value);
-            for (uintptr_t value : entry->stack_args) dump_dark_memory("dark_table_stack_memory", value);
+        char scan_all[4]{};
+        const bool scan_enabled = GetEnvironmentVariableA("DLSS5_DARK_SCAN", scan, sizeof(scan)) > 0;
+        const bool scan_every_slot = GetEnvironmentVariableA("DLSS5_DARK_SCAN_ALL", scan_all, sizeof(scan_all)) > 0;
+        if (scan_enabled && (scan_every_slot || entry->index == 12 || entry->index == 50)) {
+            for (uintptr_t value : entry->register_args) {
+                dump_dark_memory("dark_table_memory", value);
+                dump_dark_binary("dark_table_memory", value);
+            }
+            for (uintptr_t value : entry->stack_args) {
+                dump_dark_memory("dark_table_stack_memory", value);
+                dump_dark_binary("dark_table_stack_memory", value);
+            }
         }
     }
-}
-
-void start_dark_record_dump_thread() {
-    if (g_dump_thread.joinable()) return;
-    g_dump_stop.store(false);
-    g_dump_thread = std::thread([] {
-        while (!g_dump_stop.load()) {
-            bool has_calls = false;
-            {
-                std::lock_guard<std::mutex> lock(g_dark_mutex);
-                for (const auto &entry : g_dark_records) {
-                    if (entry->count != 0) { has_calls = true; break; }
-                }
-            }
-            if (has_calls && !g_dump_emitted.exchange(true)) {
-                log([] { return std::string("dark_record_thread_observed_calls"); });
-                dump_dark_records();
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-    });
 }
 
 CUresult __stdcall hook_cu_module_load_data(CUmodule *module, const void *image) {
@@ -563,8 +1008,9 @@ void install_driver_hooks() {
 }
 
 void on_init_device(device *dev) {
+    init_dark_trace();
     install_driver_hooks();
-    start_dark_record_dump_thread();
+    install_d3d12_device_hooks(dev);
     log([&] {
         std::ostringstream s;
         char description[256]{};
@@ -575,6 +1021,16 @@ void on_init_device(device *dev) {
         s << "init_device api=0x" << std::hex << uint32_t(dev->get_api())
           << " vendor=0x" << vendor << " device=0x" << device_id
           << " description=" << description << std::dec;
+        return s.str();
+    });
+}
+
+void on_init_command_list(command_list *cmd_list) {
+    install_d3d12_command_list_hooks(cmd_list);
+    log([&] {
+        std::ostringstream s;
+        s << "init_command_list native=0x" << std::hex
+          << (cmd_list ? cmd_list->get_native() : 0);
         return s.str();
     });
 }
@@ -739,6 +1195,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             std::ostringstream s; s << "process_attach pid=" << GetCurrentProcessId(); return s.str();
         });
         reshade::register_event<reshade::addon_event::init_device>(on_init_device);
+        reshade::register_event<reshade::addon_event::init_command_list>(on_init_command_list);
         reshade::register_event<reshade::addon_event::init_resource>(on_init_resource);
         reshade::register_event<reshade::addon_event::init_resource_view>(on_init_resource_view);
         reshade::register_event<reshade::addon_event::init_pipeline_layout>(on_init_pipeline_layout);
@@ -751,9 +1208,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         reshade::register_event<reshade::addon_event::reshade_begin_effects>(on_reshade_begin_effects);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(on_reshade_finish_effects);
     } else if (reason == DLL_PROCESS_DETACH) {
-        g_dump_stop.store(true);
-        if (g_dump_thread.joinable()) g_dump_thread.join();
         dump_dark_records();
+        close_dark_trace();
         reshade::unregister_addon(hModule);
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_log.is_open()) g_log.close();
