@@ -252,7 +252,19 @@ inpview out : GPU VA 0x1bdfec00, arena +0x3fec00, 0x0c8000 bytes = 160*160*32 E4
 The three views are still in native tile/lane order. Their byte extents and
 E4M3 storage are proven by the launch parameters, SASS packing instructions,
 store coverage, and byte-for-byte arena readback; only their logical PyTorch
-index permutation remains to be recovered.
+index permutation remains to be recovered. Two disposable source-register
+probes make part of that physical order executable and auditable: on the
+160x160 view's 204,800 little-endian 32-bit store units, every unit matches
+
+```text
+cta_x = (word_index // 16) % 40
+lane  = (word_index % 16) + 16 * ((word_index // 640) % 2)
+```
+
+The validator is `tools/analyze_dlss5_tinlayout_probes.py`; its latest control
+run reports zero mismatches for both maps and 128 words per 40x40 CTA. This
+recovers the physical CTA/lane schedule without claiming that the four bytes
+inside each store are already in logical channel order.
 
 The same run logs every committed D3D12 buffer creation. The only tracked
 driver-owned arena remains GPU VA `0x1ba00000`, size `0xefbc00`, with UAV flags;
