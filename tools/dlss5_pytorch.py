@@ -425,7 +425,9 @@ def _sample_front_texture(texture: Tensor, dx: float, dy: float) -> Tensor:
     )
 
 
-def build_pre_front_sass_candidate(rgb: Tensor, *, seed: int = 0x44D9) -> Tensor:
+def build_pre_front_sass_candidate(
+    rgb: Tensor, *, seed: int = 0x44D9, feature_scale: float = 1.0
+) -> Tensor:
     """Build an executable SASS-informed RGB front-end candidate.
 
     The recovered pre path has a deterministic coordinate/hash prefix, a
@@ -435,17 +437,19 @@ def build_pre_front_sass_candidate(rgb: Tensor, *, seed: int = 0x44D9) -> Tensor
     the six generated scalars and a constant one lane, yielding the proven
     ``K=15`` input shape.
 
-    The hash seed, texture offsets, and half2 lane order are still unresolved
-    in the proprietary ABI.  The function is therefore intentionally named
-    ``candidate`` and is opt-in; it is useful for experiments and dynamic
-    comparison, while the default graph keeps the conservative zero RGB
-    fallback.
+    The hash seed, texture offsets, half2 lane order, and feature scale are
+    still unresolved in the proprietary ABI.  The function is therefore
+    intentionally named ``candidate`` and is opt-in; it is useful for
+    experiments and dynamic comparison, while the default graph keeps the
+    conservative zero RGB fallback.
     """
 
     if rgb.ndim != 4 or rgb.shape[1] not in {3, 4}:
         raise ValueError("rgb must be NCHW with 3 or 4 channels")
     if not rgb.is_floating_point():
         raise TypeError("rgb must be a floating-point tensor")
+    if not math.isfinite(feature_scale) or feature_scale < 0.0:
+        raise ValueError("feature_scale must be finite and non-negative")
     n, _, height, width = rgb.shape
     if min(n, height, width) < 1:
         raise ValueError("rgb must have positive batch and spatial dimensions")
@@ -480,8 +484,8 @@ def build_pre_front_sass_candidate(rgb: Tensor, *, seed: int = 0x44D9) -> Tensor
     y = yy.unsqueeze(0).expand(n, -1, -1)
     batch = torch.arange(n, device=rgb.device, dtype=torch.int64).view(n, 1, 1)
     generated = _front_gaussian_lanes(x, y, seed + batch * 0x9E3779B9)
-    generated = generated.to(dtype=rgb.dtype)
-    texture_lanes = texture_lanes.to(dtype=rgb.dtype)
+    generated = (generated * feature_scale).to(dtype=rgb.dtype)
+    texture_lanes = (texture_lanes * feature_scale).to(dtype=rgb.dtype)
     return assemble_pre_front_feature_lanes(generated, texture_lanes)
 
 

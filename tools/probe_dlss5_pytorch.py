@@ -56,6 +56,7 @@ def main() -> int:
         default="zero",
         help="pre-block source; sass_candidate is an opt-in, non-bit-exact front-end hypothesis",
     )
+    parser.add_argument("--front-scale", type=float, default=1.0)
     parser.add_argument("--output", type=Path, default=Path("runtime_probe_output/pytorch_probe.json"))
     args = parser.parse_args()
 
@@ -96,7 +97,7 @@ def main() -> int:
     with torch.inference_mode():
         front_features = None
         if args.front_source == "sass_candidate":
-            front_features = build_pre_front_sass_candidate(image)
+            front_features = build_pre_front_sass_candidate(image, feature_scale=args.front_scale)
         output = model(rgb=image, pre_front_features=front_features)
     if args.device.startswith("cuda"):
         torch.cuda.synchronize()
@@ -115,6 +116,7 @@ def main() -> int:
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "fp8_emulation": not args.no_fp8_emulation,
         "front_source": args.front_source,
+        "front_scale": args.front_scale,
         "input_shape": list(image.shape),
         "output": tensor_summary(output),
         "elapsed_seconds": elapsed,

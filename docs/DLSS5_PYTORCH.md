@@ -183,6 +183,11 @@ emulation、145,754,963 parameters）如下：
 | `zero` | 0.04332 | 0.07557 | 0.98063 |
 | `sass_candidate` | 1.40159 | 1.85794 | 0.20312 |
 
+这里的 candidate 是 raw FP16 输出；即使把它作为显示图像 clip 到 `[0,1]`，256²
+结果也只有 correlation `0.24885`、MAE `0.37270`。进一步测试 feature scale
+`0.01/0.03/0.1/0.3` 的 raw MAE 为 `1.42364/1.46004/1.52841/1.70503`，
+因此问题不是单一幅度参数。
+
 这组 A/B 结果否定了当前具体的采样/排列假设，但不否定 SASS 中存在生成路径；它
 说明在恢复精确前端之前，不能把 DLSS5 当作已经完成的 image-to-image PyTorch
 模型。`tools/compare_dlss5_fp16_pytorch.py` 可复用同一 RGBA16F 输入合同进行后续
