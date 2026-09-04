@@ -1,5 +1,7 @@
 # DLSS5 as Inpainting
 
+当前立体视觉改进方案见 [Stereo Pipeline V2](docs/STEREO_PIPELINE_V2.md)：共享背景补全、双眼一致渲染、DLSS5 增强与局部修复的对照验证。
+
 Research repository for understanding the DLSS5/Feature18 neural-rendering
 contract, translating the recovered arithmetic into PyTorch, and preparing a
 portable image-to-image/inpainting pipeline.
