@@ -145,15 +145,15 @@ dynamic causal proof that a modification inside the actual DLSS5 pre CUBIN
 changes the neural output.
 
 The patch is intentionally not installed into `bin/` and does not claim to
-recover the front feature tensor. The next safe experiments are same-length
-or metadata-adjusted patches to the pre `TEX` coordinate/math path, followed by
-output A/B runs; the extractor and patcher now provide the required reversible
-boundary. A first coordinate experiment changed the `FADD R5,R5,0.5` constant
-to `0.0`. Its patched DLL ran successfully; the isolated first checker output
-was unchanged, while the history-after-color output changed with MAE
-`0.0038043`, RMSE `0.0066071`, and `149,982/262,144` elements above `1e-3`.
-This is consistent with a temporal/state-dependent coordinate path and is not
-yet a recovered texture-lane formula.
+recover the front feature tensor. The automated matrix in
+`tools/probe_dlss5_front_mutations.py` now runs the validated two-frame
+`color(reset=1) -> checker(reset=0)` sequence, disables only the private CUDA
+hook, and observes the latest Neural dispatch through the D3D12 readback.
+This is important: the one-frame result is insensitive to the coordinate
+mutation, while the temporal result is causal. The first coordinate experiment
+changed the `FADD R5,R5,0.5` constant to `0.0`; its history-after-color output
+changed with MAE `0.0038043`, RMSE `0.0066071`, and `149,982/262,144` elements
+above `1e-3`.
 
 A second live experiment changed the first pre `TEX` component mask from
 `0x7` to `0x1` while preserving the rest of the instruction. The patched DLL
@@ -172,7 +172,7 @@ contract. Relative to the unmodified DLL, the history-after-color output was:
 |---|---:|---:|---|
 | `0x1590` | `0.0` | `0` | inactive for this contract/path |
 | `0x15c0` | `0.0` | `0` | inactive for this contract/path |
-| `0x15d0` | `0.186569` | `196,415` | active texture contribution |
+| `0x15d0` | `0.175637` | `196,414` | active texture contribution |
 | `0x15e0` | `0.261709` | `196,608` | active texture contribution |
 | `0x15f0` | `0.0` | `0` | inactive for this contract/path |
 
@@ -181,6 +181,26 @@ The initial `TEX` at `0x0620` remains active: changing its mask from `0x7` to
 reconstruction target to the initial read plus the two active later reads for
 the current path; static instruction presence alone is not enough to choose
 the feature lanes.
+
+The same runner also tested four additional coordinate instructions in the
+actual pre kernel. On the RTX 5080 and the same two-frame temporal contract,
+`FADD R6,R5,0.5 -> 0.0` changed the output with MAE `0.0045224`, RMSE
+`0.0077229`, maximum absolute error `0.0512695`, and `153,539/262,144`
+elements above `1e-3`; `FADD R48,R43,0.5 -> 0.0` changed it with MAE
+`0.0036740`, RMSE `0.0060694`, maximum absolute error `0.0400391`, and
+`157,511/262,144` changed elements. The tested `FADD R37/R38` points were
+inactive for this carrier. Across all nine mutations, the captured original
+and Neural textures were byte-identical to baseline, so the visible delta is
+downstream of the current readback boundary.
+
+The matrix is reproducible with:
+
+```powershell
+python tools\probe_dlss5_front_mutations.py `
+  --runtime-template <clean-runtime> `
+  --harness <clean-runtime>\dlss5_eval.exe `
+  --addon .native-build\reshade-capture\Release\dlss5_reshade_capture.addon64
+```
 
 ## Graphics-side capture boundary
 

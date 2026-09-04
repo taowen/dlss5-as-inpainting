@@ -23,7 +23,18 @@ def main() -> int:
         raise ValueError("unsupported DLSS 5 checkpoint format")
     dtype = getattr(torch, checkpoint["dtype"])
     model = DLSS5Graph(**checkpoint["model_kwargs"]).to(dtype=dtype)
-    model.load_state_dict(checkpoint["state_dict"], strict=True)
+    missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=False)
+    # These audit-only buffers were added after the first reference checkpoint
+    # was exported. They default to zero, which is exactly the historical
+    # unresolved-front behavior; every learned parameter must still match.
+    allowed_missing = {"pre_front_weight0_f16", "pre_front_weight1_f16"}
+    unexpected_set = set(unexpected)
+    unexpected_missing = set(missing) - allowed_missing
+    if unexpected_set or unexpected_missing:
+        raise RuntimeError(
+            "checkpoint/model state mismatch: "
+            f"missing={sorted(unexpected_missing)}, unexpected={sorted(unexpected_set)}"
+        )
     if checkpoint.get("fp8_emulation"):
         model.enable_fp8_emulation()
     model = model.eval().to(args.device)

@@ -28,6 +28,8 @@ namespace {
 std::mutex g_mutex;
 std::ofstream g_log;
 std::once_flag g_hooks_once;
+std::once_flag g_min_hook_init_once;
+bool g_min_hook_ready = false;
 
 using CUresult = unsigned int;
 using CUmodule = void *;
@@ -1531,11 +1533,18 @@ HMODULE WINAPI hook_load_library_w(LPCWSTR name) {
     return module;
 }
 
-void install_driver_hooks() {
-    std::call_once(g_hooks_once, [] {
+bool ensure_min_hook_initialized() {
+    std::call_once(g_min_hook_init_once, [] {
         const MH_STATUS init = MH_Initialize();
         log([&] { std::ostringstream s; s << "minhook_initialize status=" << int(init); return s.str(); });
-        if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) return;
+        g_min_hook_ready = init == MH_OK || init == MH_ERROR_ALREADY_INITIALIZED;
+    });
+    return g_min_hook_ready;
+}
+
+void install_driver_hooks() {
+    if (!ensure_min_hook_initialized()) return;
+    std::call_once(g_hooks_once, [] {
         MH_CreateHookApi(L"kernel32.dll", "GetProcAddress", reinterpret_cast<LPVOID>(&hook_get_proc_address), reinterpret_cast<LPVOID *>(&g_get_proc_address));
         MH_CreateHookApi(L"kernel32.dll", "LoadLibraryExW", reinterpret_cast<LPVOID>(&hook_load_library_ex_w), reinterpret_cast<LPVOID *>(&g_load_library_ex_w));
         MH_CreateHookApi(L"kernel32.dll", "LoadLibraryW", reinterpret_cast<LPVOID>(&hook_load_library_w), reinterpret_cast<LPVOID *>(&g_load_library_w));
@@ -1546,7 +1555,12 @@ void install_driver_hooks() {
 
 void on_init_device(device *dev) {
     init_dark_trace();
-    install_driver_hooks();
+    ensure_min_hook_initialized();
+    if (env_enabled("DLSS5_DARK_NO_PRIVATE_HOOK")) {
+        log([] { return std::string("driver_hooks_disabled_by_environment"); });
+    } else {
+        install_driver_hooks();
+    }
     install_d3d12_device_hooks(dev);
     log([&] {
         std::ostringstream s;
