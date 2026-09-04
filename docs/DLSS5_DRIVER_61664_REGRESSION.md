@@ -27,4 +27,3 @@ For this pinned `nvngx_dlssnr.dll`, ReShade/add-on, harness, and 5080, the NBA
 ControlMask, or UseAutoMask effective. The result does not prove that future
 drivers or other DLSS5 builds behave the same; it establishes that the current
 ControlMask no-op is not caused by the 616.56 driver alone.
-
