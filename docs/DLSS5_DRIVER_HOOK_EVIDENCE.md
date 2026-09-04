@@ -96,6 +96,18 @@ the heap base, while the output table used descriptor 4 or 5. This matches the
 two shader resource layouts above and identifies the final Original/Neural
 composition pass.
 
+The composition root signature also receives 16 root constants at parameter 2.
+For the 256x256 SDR probe the observed words are:
+
+```text
+0x100, 0x100, 0x100, 0x100, 0x0, 0x0, 0x100, 0x100,
+0x434b0000, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+```
+
+The first two `uint2` fields are the output size and the `0x434b0000` word is
+the observed `203.0` floating-point diffuse-white value; the following `1` is
+the HDR mode in this carrier configuration.
+
 The optional readback was run once per input with a 256x256 fence-synchronized
 probe. The root-0 descriptor 0 capture matched the input ramp/checker, while
 the second source consumed by the `Neural` shader had these means:
