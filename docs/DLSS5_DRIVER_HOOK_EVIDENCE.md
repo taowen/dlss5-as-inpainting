@@ -297,12 +297,14 @@ after_pre     c0131e251dc2271b80b3580070f217aa39e478a5915f094a22e07abbc8bff311
 after_inpview 7a373645619763957801374d709bc16c5f19ce2a196df4c5ec21fcd93e0f4e30
 ```
 
-The byte sizes factor as a 32-channel FP16 candidate for the first view and a
-32-channel E4M3/byte candidate for each 160x160 view. Those are size-factor
-identities, not permission to flatten the native `tinlayout` swizzle; the
-logical lane permutation still has to be decoded before feeding these bytes
-to an ordinary PyTorch tensor. This is now a captured exact producer output,
-with the remaining work narrowed to layout decoding and independent numeric
+The byte sizes factor as a 32-channel E4M3/byte tensor at both views:
+`320*320*32 = 0x320000` and `160*160*32 = 0xc8000`. This agrees with the
+pre CUBIN's `F2FP.SATFINITE.E4M3.F16` packing before its 128-bit stores and
+with the `0x140`/`0xa0` launch dimensions. Those are exact storage identities,
+not permission to flatten the native `tinlayout` swizzle; the logical lane
+permutation still has to be decoded before feeding these bytes to an ordinary
+PyTorch tensor. This is now a captured exact producer output, with the
+remaining work narrowed to swizzle decoding and independent numeric
 reproduction.
 
 ## Bit-exact PyTorch-facing carrier

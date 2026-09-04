@@ -238,6 +238,22 @@ snapshot changed exactly 9,278,345 bytes, from `0x16c0c` through the end of the
 from the D3D12 Neural consumer and is now recorded as raw-byte SHA-256 plus
 changed-range metadata in `report.json`.
 
+The NVAPI launch hook now adds a more precise boundary: a readback can be
+inserted immediately after `cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8`
+and after its first `inpview` consumer. In the 256x256 5080 control, the
+contiguous storage views are:
+
+```text
+pre output 0: GPU VA 0x1ba16c00, arena +0x16c00, 0x320000 bytes = 320*320*32 E4M3 bytes
+pre output 1: GPU VA 0x1bd36c00, arena +0x336c00, 0x0c8000 bytes = 160*160*32 E4M3 bytes
+inpview out : GPU VA 0x1bdfec00, arena +0x3fec00, 0x0c8000 bytes = 160*160*32 E4M3 bytes
+```
+
+The three views are still in native tile/lane order. Their byte extents and
+E4M3 storage are proven by the launch parameters, SASS packing instructions,
+store coverage, and byte-for-byte arena readback; only their logical PyTorch
+index permutation remains to be recovered.
+
 The same run logs every committed D3D12 buffer creation. The only tracked
 driver-owned arena remains GPU VA `0x1ba00000`, size `0xefbc00`, with UAV flags;
 the other 15.7 MiB buffers appearing in the log are the readback resources

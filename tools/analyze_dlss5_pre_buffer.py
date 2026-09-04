@@ -117,9 +117,9 @@ def main() -> int:
         "candidate_shapes": [
             {
                 "region": "pre_skip_candidate",
-                "shape": [160, 320, 32],
-                "dtype": "float16",
-                "bytes": 160 * 320 * 32 * 2,
+                "shape": [320, 320, 32],
+                "dtype": "uint8/e4m3",
+                "bytes": 320 * 320 * 32,
                 "status": "size-factor candidate; native tile swizzle remains unresolved",
             },
             {
