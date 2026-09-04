@@ -39,6 +39,15 @@ from dlss5_fp16_harness_probe import run_harness, write_contracts  # noqa: E402
 
 KERNEL = "cc_tinlayout_fused_pre_block_swin_1h_32_1_ds_fp8"
 CAPTURE_RE = re.compile(r"dlss5_d3d12_capture_(\d+)_(\d+)\.rgba16f\.bin$")
+CAPTURE_ALL_LAYOUT = (
+    "root0_descriptor0",
+    "root0_descriptor1",
+    "root0_descriptor2",
+    "root0_descriptor3",
+    "root0_descriptor4",
+    "root0_descriptor5",
+    "root1_descriptor0",
+)
 
 MUTATIONS: tuple[dict[str, str], ...] = (
     {
@@ -169,7 +178,9 @@ def copy_runtime(template: Path, destination: Path, harness: Path, addon: Path, 
     shutil.copy2(dll, destination / "nvngx_dlssnr.dll")
 
 
-def capture_pair(runtime: Path, width: int, height: int) -> tuple[Path, Path]:
+def capture_pair(
+    runtime: Path, width: int, height: int, capture_all: bool
+) -> tuple[Path, Path, list[Path]]:
     groups: dict[str, list[tuple[int, Path]]] = {}
     for path in runtime.glob("dlss5_d3d12_capture_*.rgba16f.bin"):
         match = CAPTURE_RE.fullmatch(path.name)
@@ -181,11 +192,24 @@ def capture_pair(runtime: Path, width: int, height: int) -> tuple[Path, Path]:
     captures.sort(key=lambda item: item[0])
     if len(captures) < 2:
         raise RuntimeError("Neural readback produced fewer than two SRV captures")
-    original = captures[-2][1]
-    neural = captures[-1][1]
+    if capture_all:
+        # The add-on visits root0[0..7] then root1[0..3] for each Neural
+        # dispatch. On the current carrier seven of those descriptors resolve
+        # to 2D textures; the final seven entries are the latest dispatch.
+        if len(captures) < 7:
+            raise RuntimeError("all-resource capture produced fewer than seven textures")
+        latest = captures[-7:]
+        original = latest[0][1]
+        neural = latest[1][1]
+    else:
+        original = captures[-2][1]
+        neural = captures[-1][1]
+    all_paths = [path for _, path in captures]
     read_rgba16f(original, width, height)
     read_rgba16f(neural, width, height)
-    return original, neural
+    for path in all_paths:
+        read_rgba16f(path, width, height)
+    return original, neural, all_paths
 
 
 def run_case(
@@ -293,6 +317,10 @@ def run_case(
         output.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["DLSS5_D3D12_CAPTURE_NEURAL"] = "1"
+        if args.capture_all_neural:
+            env["DLSS5_D3D12_CAPTURE_ALL_NEURAL"] = "1"
+        else:
+            env.pop("DLSS5_D3D12_CAPTURE_ALL_NEURAL", None)
         env["DLSS5_DARK_NO_PRIVATE_HOOK"] = "1"
         for variable in ("DLSS5_DARK_SCAN", "DLSS5_DARK_SCAN_ALL", "DLSS5_DARK_DUMP_STRUCTS", "DLSS5_DARK_NOOP"):
             env.pop(variable, None)
@@ -313,13 +341,20 @@ def run_case(
             os.environ.clear()
             os.environ.update(old_env)
 
-        original_path, neural_path = capture_pair(runtime, args.width, args.height)
+        original_path, neural_path, all_captures = capture_pair(
+            runtime, args.width, args.height, args.capture_all_neural
+        )
         result.update(
             {
                 "status": "ok",
                 "final": str(output),
                 "original_capture": str(original_path),
                 "neural_capture": str(neural_path),
+                "all_captures": [str(path) for path in all_captures],
+                "capture_layout": (
+                    [CAPTURE_ALL_LAYOUT[index % len(CAPTURE_ALL_LAYOUT)] for index in range(len(all_captures))]
+                    if args.capture_all_neural else ["legacy_capture"] * len(all_captures)
+                ),
                 "final_summary": summary(read_rgba16f(output, args.width, args.height)),
                 "original_summary": summary(read_rgba16f(original_path, args.width, args.height)),
                 "neural_summary": summary(read_rgba16f(neural_path, args.width, args.height)),
@@ -348,6 +383,11 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--input", choices=("color", "checker"), default="color")
     parser.add_argument("--only", action="append", help="run only the named mutation; repeatable")
+    parser.add_argument(
+        "--capture-all-neural",
+        action="store_true",
+        help="capture every resolved 2D descriptor around each Neural dispatch",
+    )
     parser.add_argument("--workdir", type=Path, default=REPO_ROOT / ".native-build/front-mutations")
     args = parser.parse_args()
 
@@ -381,13 +421,30 @@ def main() -> int:
         baseline_final = read_rgba16f(Path(baseline["final"]), args.width, args.height)
         baseline_original = read_rgba16f(Path(baseline["original_capture"]), args.width, args.height)
         baseline_neural = read_rgba16f(Path(baseline["neural_capture"]), args.width, args.height)
+        baseline_captures = [
+            read_rgba16f(Path(path), args.width, args.height)
+            for path in baseline["all_captures"]
+        ]
         for report in reports:
             if report["status"] != "ok":
                 continue
+            capture_values = [
+                read_rgba16f(Path(path), args.width, args.height)
+                for path in report["all_captures"]
+            ]
+            if len(capture_values) != len(baseline_captures):
+                raise RuntimeError(
+                    f"capture count changed for {report['name']}: "
+                    f"{len(capture_values)} != {len(baseline_captures)}"
+                )
             report["diff_vs_baseline"] = {
                 "final": difference(read_rgba16f(Path(report["final"]), args.width, args.height), baseline_final),
                 "original_capture": difference(read_rgba16f(Path(report["original_capture"]), args.width, args.height), baseline_original),
                 "neural_capture": difference(read_rgba16f(Path(report["neural_capture"]), args.width, args.height), baseline_neural),
+                "all_captures": [
+                    difference(values, baseline_values)
+                    for values, baseline_values in zip(capture_values, baseline_captures)
+                ],
             }
 
     output = run_root / "report.json"
@@ -398,6 +455,7 @@ def main() -> int:
                 "height": args.height,
                 "input": args.input,
                 "sequence": [args.input, "checker" if args.input == "color" else "color"],
+                "capture_all_neural": args.capture_all_neural,
                 "kernel": KERNEL,
                 "runtime_template": str(args.runtime_template.resolve()),
                 "dll": str(args.dll.resolve()),

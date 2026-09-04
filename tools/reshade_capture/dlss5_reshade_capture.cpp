@@ -790,8 +790,25 @@ void STDMETHODCALLTYPE hook_d3d12_dispatch(ID3D12GraphicsCommandList *list, UINT
     });
     if (g_d3d12_dispatch) g_d3d12_dispatch(list, x, y, z);
     if (neural_pipeline) {
-        capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 0), "root0_descriptor0");
-        capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 1), "root0_descriptor1");
+        if (env_enabled("DLSS5_D3D12_CAPTURE_ALL_NEURAL")) {
+            for (size_t i = 0; i < 8; ++i) {
+                ID3D12Resource *resource = resolve_d3d12_gpu_descriptor(root0, i);
+                if (!resource) continue;
+                std::ostringstream label;
+                label << "root0_descriptor" << i;
+                capture_d3d12_texture(list, resource, label.str().c_str());
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                ID3D12Resource *resource = resolve_d3d12_gpu_descriptor(root1, i);
+                if (!resource) continue;
+                std::ostringstream label;
+                label << "root1_descriptor" << i;
+                capture_d3d12_texture(list, resource, label.str().c_str());
+            }
+        } else {
+            capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 0), "root0_descriptor0");
+            capture_d3d12_texture(list, resolve_d3d12_gpu_descriptor(root0, 1), "root0_descriptor1");
+        }
     }
 }
 

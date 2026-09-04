@@ -193,6 +193,16 @@ inactive for this carrier. Across all nine mutations, the captured original
 and Neural textures were byte-identical to baseline, so the visible delta is
 downstream of the current readback boundary.
 
+The optional `--capture-all-neural` mode then read every resolved descriptor
+around each Neural dispatch. It showed why the two legacy captures were
+unchanged: they are root0[0] and root0[1]. In the latest dispatch, the
+`FADD R5` mutation changed root0[2] with MAE `0.0029757` and changed
+root0[5]/root1[0] with MAE `0.0038043`; the `TEX 0x15d0` mutation changed
+root0[2] with MAE `0.2145830` and root0[5]/root1[0] with MAE `0.1937808`.
+This is the first direct evidence that the mutated pre path reaches hidden
+Neural resources. The full scan is reproducible by adding
+`--capture-all-neural` to the command above.
+
 The matrix is reproducible with:
 
 ```powershell
