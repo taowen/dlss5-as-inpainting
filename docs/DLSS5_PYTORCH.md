@@ -254,3 +254,20 @@ distillation workflow, and CPU/CUDA validation are documented in
 [`DLSS5_PORTABLE.md`](DLSS5_PORTABLE.md). This portable model is intentionally
 separate from both the semantic 71-block graph and the native bit-exact
 carrier.
+
+## Source layout
+
+The implementation is split under `tools/dlss5/`:
+
+| module | responsibility |
+|---|---|
+| `layouts.py` | recovered blob offsets, shapes, and block maps |
+| `weights.py` | outer `WEIGHTS_HT` parser and serialized tensor slices |
+| `ops.py` | E4M3 boundaries, front candidates, and tensor-layout helpers |
+| `blocks.py` | reusable Swin, Split-Swin, and ViT blocks |
+| `graph.py` | 71-block module and forward dataflow |
+| `loaders.py` | proven weight-to-module bindings and audit report |
+| `cli.py` | smoke test and weight inspection |
+
+`tools/dlss5_pytorch.py` is only a compatibility facade. Existing imports keep
+working while new code can import the narrower module it needs.
