@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 
-from dlss5_pytorch import DLSS5Graph
+from dlss5_pytorch import DLSS5Graph, build_pre_front_sass_candidate
 
 
 def tensors(value: Any):
@@ -50,6 +50,12 @@ def main() -> int:
     parser.add_argument("--size", type=int, default=64)
     parser.add_argument("--dtype", choices=("float16", "float32"), default="float32")
     parser.add_argument("--no-fp8-emulation", action="store_true")
+    parser.add_argument(
+        "--front-source",
+        choices=("zero", "sass_candidate"),
+        default="zero",
+        help="pre-block source; sass_candidate is an opt-in, non-bit-exact front-end hypothesis",
+    )
     parser.add_argument("--output", type=Path, default=Path("runtime_probe_output/pytorch_probe.json"))
     args = parser.parse_args()
 
@@ -88,7 +94,10 @@ def main() -> int:
         torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     with torch.inference_mode():
-        output = model(rgb=image)
+        front_features = None
+        if args.front_source == "sass_candidate":
+            front_features = build_pre_front_sass_candidate(image)
+        output = model(rgb=image, pre_front_features=front_features)
     if args.device.startswith("cuda"):
         torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
@@ -105,6 +114,7 @@ def main() -> int:
         "skipped_entries": len(model.weight_report["skipped"]),
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "fp8_emulation": not args.no_fp8_emulation,
+        "front_source": args.front_source,
         "input_shape": list(image.shape),
         "output": tensor_summary(output),
         "elapsed_seconds": elapsed,

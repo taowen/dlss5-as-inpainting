@@ -358,6 +358,133 @@ def assemble_pre_front_feature_lanes(
     )
 
 
+def _front_hash_u32(x: Tensor, y: Tensor, seed: int | Tensor) -> Tensor:
+    """Return a deterministic uint32-like hash as an int64 tensor.
+
+    The pre CUBIN uses a tile-coordinate hash followed by four uniform-like
+    values and ``LG2 -> *ln(2) -> -2 -> SQRT``.  The exact scalar seed and
+    lane permutation are not exposed by the host ABI, so this helper mirrors
+    the observed integer/hash shape without claiming to reproduce the hidden
+    constant buffer byte-for-byte.
+    """
+
+    mask = 0xFFFFFFFF
+    seed_value = torch.as_tensor(seed, device=x.device, dtype=torch.int64)
+    value = (x * 0x9E3779B1 + y * 0x85EBCA6B + seed_value) & mask
+    value = (value ^ (value >> 16)) & mask
+    value = (value * 0x7FEB352D) & mask
+    value = (value ^ (value >> 15)) & mask
+    value = (value * 0x846CA68B) & mask
+    return (value ^ (value >> 16)) & mask
+
+
+def _front_uniform(x: Tensor, y: Tensor, seed: int | Tensor) -> Tensor:
+    # Avoid exactly zero: the native path's logarithm input is formed from a
+    # positive integer plus one, so a zero uniform is not a valid state.
+    value = _front_hash_u32(x, y, seed).to(torch.float32)
+    return (value + 1.0) / 4294967297.0
+
+
+def _front_gaussian_lanes(x: Tensor, y: Tensor, seed: int | Tensor) -> Tensor:
+    """Generate three deterministic half2 lanes using the observed math path."""
+
+    values: list[Tensor] = []
+    # Six Box-Muller pairs produce the six scalar values carried by three
+    # generated half2 lanes.  Keeping this in FP32 until the final cast mirrors
+    # the SASS sequence's F32 transcendental work followed by F2F.F16.
+    for pair in range(3):
+        u = _front_uniform(x, y, seed + pair * 2)
+        v = _front_uniform(x, y, seed + pair * 2 + 1)
+        radius = torch.sqrt((-2.0 * torch.log(u)).clamp_min(0.0))
+        angle = 2.0 * math.pi * v
+        values.extend((radius * torch.cos(angle), radius * torch.sin(angle)))
+    return torch.stack(values, dim=1).reshape(x.shape[0], 3, 2, *x.shape[-2:])
+
+
+def _sample_front_texture(texture: Tensor, dx: float, dy: float) -> Tensor:
+    """Sample a four-component texture at a pixel offset, like a TEX 2D read."""
+
+    _, _, height, width = texture.shape
+    device = texture.device
+    dtype = torch.float32
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=device, dtype=dtype),
+        torch.arange(width, device=device, dtype=dtype),
+        indexing="ij",
+    )
+    # align_corners=False maps pixel centers to (2*(p+0.5)/size - 1).
+    grid = torch.stack(
+        (
+            2.0 * (xx + 0.5 + dx) / width - 1.0,
+            2.0 * (yy + 0.5 + dy) / height - 1.0,
+        ),
+        dim=-1,
+    ).unsqueeze(0).expand(texture.shape[0], -1, -1, -1)
+    return F.grid_sample(
+        texture.float(), grid, mode="bilinear", padding_mode="border", align_corners=False
+    )
+
+
+def build_pre_front_sass_candidate(rgb: Tensor, *, seed: int = 0x44D9) -> Tensor:
+    """Build an executable SASS-informed RGB front-end candidate.
+
+    The recovered pre path has a deterministic coordinate/hash prefix, a
+    Box--Muller-like generated half2 path, and four sampled texture half2
+    lanes before the two serialized FP16 front tiles.  This implementation
+    uses two RGBA bilinear reads (each split into RG and BA half2 lanes), plus
+    the six generated scalars and a constant one lane, yielding the proven
+    ``K=15`` input shape.
+
+    The hash seed, texture offsets, and half2 lane order are still unresolved
+    in the proprietary ABI.  The function is therefore intentionally named
+    ``candidate`` and is opt-in; it is useful for experiments and dynamic
+    comparison, while the default graph keeps the conservative zero RGB
+    fallback.
+    """
+
+    if rgb.ndim != 4 or rgb.shape[1] not in {3, 4}:
+        raise ValueError("rgb must be NCHW with 3 or 4 channels")
+    if not rgb.is_floating_point():
+        raise TypeError("rgb must be a floating-point tensor")
+    n, _, height, width = rgb.shape
+    if min(n, height, width) < 1:
+        raise ValueError("rgb must have positive batch and spatial dimensions")
+
+    texture = rgb[:, :4]
+    if texture.shape[1] == 3:
+        texture = torch.cat(
+            (texture, torch.ones(n, 1, height, width, device=rgb.device, dtype=rgb.dtype)),
+            dim=1,
+        )
+    # The analyzed kernel performs multiple 0x7 texture reads around a
+    # transformed coordinate.  The center and +x samples are the smallest
+    # explicit candidate that preserves all four returned components.
+    sample0 = _sample_front_texture(texture, 0.0, 0.0)
+    sample1 = _sample_front_texture(texture, 1.0, 0.0)
+    texture_lanes = torch.stack(
+        (
+            sample0[:, 0:2],
+            sample0[:, 2:4],
+            sample1[:, 0:2],
+            sample1[:, 2:4],
+        ),
+        dim=1,
+    )
+
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=rgb.device, dtype=torch.int64),
+        torch.arange(width, device=rgb.device, dtype=torch.int64),
+        indexing="ij",
+    )
+    x = xx.unsqueeze(0).expand(n, -1, -1)
+    y = yy.unsqueeze(0).expand(n, -1, -1)
+    batch = torch.arange(n, device=rgb.device, dtype=torch.int64).view(n, 1, 1)
+    generated = _front_gaussian_lanes(x, y, seed + batch * 0x9E3779B9)
+    generated = generated.to(dtype=rgb.dtype)
+    texture_lanes = texture_lanes.to(dtype=rgb.dtype)
+    return assemble_pre_front_feature_lanes(generated, texture_lanes)
+
+
 # The fused kernels use ``MpCubicSiluActivation`` rather than GELU.  These
 # are the exact half constants embedded in the sm_86/sm_120 SASS path.  The
 # expression is written in the same order as the host op list:
@@ -2287,6 +2414,9 @@ def _self_test() -> None:
     packed = assemble_pre_front_feature_lanes(generated, texture)
     assert packed.shape == (1, 15, 8, 8)
     assert torch.equal(packed[:, 6], torch.ones(1, 8, 8).half())
+    candidate = build_pre_front_sass_candidate(color)
+    assert candidate.shape == (1, 15, 64, 64)
+    assert torch.isfinite(candidate.float()).all()
     with torch.no_grad():
         y = model(color, history, motion)
         z = model(color, history, motion, mask)

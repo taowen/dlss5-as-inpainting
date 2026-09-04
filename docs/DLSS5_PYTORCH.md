@@ -153,3 +153,37 @@ print(net.weight_report)
 `load_known=True` 会加载普通 Swin、pre body、四个 downsample-Swin body、四个 upsample-Swin body、ViT、Split-Swin、decoder-input block39 以及 block70 post body 的已确认 FP8 矩阵、window bias、FP32 attention scale、ViT score scalar、pre C32 body、pre 的两块 `16×16` FP16 front tile（保存为 audit buffer）、post 输入的两个 FP16 channel vector 和 `*_cos_skip` 残差缩放；down/up transition matrix、Split FinalHead 的 `1024×512` pointwise weight，以及 post 的 padded FP16 `out_conv_weight` 也会加载。post tail 现在按注册顺序拆成 `out_gain(8×FP16)` + `out_conv_weight(16×32×FP16)`；默认把前 96 half 按 column-major `K=32,N=3` 重解释，来自 sm_120 load stride 和 golden 回归，`raw` 与 hole-compressed `tensor_core_candidate` 仍可用于对照。`out_gain` 已解码且 8 个值全为 0。尚未确定语义的 header、transition 空间重排、pre texture front-end 的 `TEX/cat/ones_like/detach` 数值组装、两块 front tile 的输入/输出连接、ViT half2 exp 的 bit-exact 实现、block39 的动态 `sin/tile` 会放进 report，不会猜测 reshape。FinalHead 的 host 第二 convolution slot 已按 cubin 证据落为 identity。修正 attention-bias 起点后，所有已加载的 bias 都是有限 FP16；`block70.layer0.blend_scale` 已验证为 `0.73974609375`。真实整网执行还必须启用 CUBIN 已确认的 E4M3 SATFINITE activation 边界；关闭它会把本应量化存储的中间结果错误地以无限制 FP32 传播并最终溢出。
 
 剩余的 pre texture front-end 数值组装、两块 FP16 front tile 的连接、downsample/upsample 的精确空间重排、block39 的 `sin/tile` 插值、ViT half2 exp 的 bit-exact 实现、post output tile 的 tensor-core swizzle/out_gain consumer 仍是 fused layout。要达到 bit-exact，还需要继续从对应 kernel 的 load stride 和 DLL golden 输出校准这些布局及每层量化参数。
+
+## Pre-front candidate and 5080 probe
+
+`tools/dlss5_pytorch.py` 现在还提供一个显式的实验前端：
+
+```bash
+python tools/probe_dlss5_pytorch.py --weights DLSS5-extracted \
+  --device cuda --dtype float16 --size 64 --front-source sass_candidate
+```
+
+它把 SASS 中已看到的坐标哈希、`LG2 -> sqrt -> sin/cos` 生成路径，以及两次
+RGBA 纹理读取，拼成 `3 generated half2 + 1.0 + 4 texture half2 = K=15`。
+哈希 seed、采样坐标和 half2 lane 顺序仍未从运行时 ABI 中恢复，因此默认仍使用
+`zero` fallback；`sass_candidate` 只用于动态实验。
+
+本机 RTX 5080 的 64² FP16 结果（PyTorch 2.11.0+cu128、E4M3 activation
+emulation、145,754,963 parameters）如下：
+
+| front source | finite output | range | elapsed |
+|---|---:|---:|---:|
+| `zero` | 12,288/12,288 | `0.0 .. 0.739746` | 0.627 s |
+| `sass_candidate` | 12,288/12,288 | `-5.5625 .. 7.40625` | 0.709 s |
+
+使用同一个 native RGBA16F checker 输入和 isolated native 输出做 256² 对照：
+
+| front source | RGB MAE | RGB RMSE | correlation |
+|---|---:|---:|---:|
+| `zero` | 0.04332 | 0.07557 | 0.98063 |
+| `sass_candidate` | 1.40159 | 1.85794 | 0.20312 |
+
+这组 A/B 结果否定了当前具体的采样/排列假设，但不否定 SASS 中存在生成路径；它
+说明在恢复精确前端之前，不能把 DLSS5 当作已经完成的 image-to-image PyTorch
+模型。`tools/compare_dlss5_fp16_pytorch.py` 可复用同一 RGBA16F 输入合同进行后续
+候选对照。
