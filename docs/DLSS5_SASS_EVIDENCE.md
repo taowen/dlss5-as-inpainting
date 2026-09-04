@@ -163,3 +163,21 @@ of that texture read participates in the front feature assembly; a single
 component cannot serve as the PyTorch front input. The experiment also
 validates that the patcher can change a SASS modifier/control field and keep
 the compressed bundle loadable.
+
+Finally, each of the five later `TEX 0x7` reads in the front packing region was
+masked to `0x1` independently and evaluated with the same 256² temporal
+contract. Relative to the unmodified DLL, the history-after-color output was:
+
+| SASS PC | output MAE | changed half elements | reading |
+|---|---:|---:|---|
+| `0x1590` | `0.0` | `0` | inactive for this contract/path |
+| `0x15c0` | `0.0` | `0` | inactive for this contract/path |
+| `0x15d0` | `0.186569` | `196,415` | active texture contribution |
+| `0x15e0` | `0.261709` | `196,608` | active texture contribution |
+| `0x15f0` | `0.0` | `0` | inactive for this contract/path |
+
+The initial `TEX` at `0x0620` remains active: changing its mask from `0x7` to
+`0x1` makes the native RGB output exactly zero. This narrows the PyTorch front
+reconstruction target to the initial read plus the two active later reads for
+the current path; static instruction presence alone is not enough to choose
+the feature lanes.
