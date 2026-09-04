@@ -40,3 +40,42 @@ a deterministic Box--Muller-style noise pair, not with an external random
 stream. The PyTorch producer will therefore need the same coordinate/seed
 hash and half rounding before its 15-channel projection can be compared with
 the native golden output.
+
+## Toolchain cross-check and next capture route
+
+On 2026-09-04 the same function was disassembled with the official CUDA
+`nvdisasm` 12.9.88 and 13.3.73 binaries. Both produced 7,689 identical text
+lines and the same SASS text SHA-256, so the current front discrepancy is not
+caused by a missing instruction in this function. Future SM120 audits should
+still pin the newer tool: a public Blackwell investigation demonstrated that
+an older disassembler can silently omit a newly added instruction
+([reproduction](https://github.com/jethac/ptxas-clmad-miscompile)).
+
+The useful static passes are `nvdisasm --cfg`/`--bbcfg` for branch regions,
+`--print-life-ranges` for register lifetime, and
+`--print-instruction-encoding`/`--print-raw` for patchable instruction bytes.
+NVIDIA documents these views in the [CUDA Binary Utilities guide](https://docs.nvidia.com/cuda/cuda-binary-utilities/).
+The PTX guide gives the authoritative warp-fragment mapping for
+`mma.m16n8k16`; in particular, the floating-point B fragment uses
+`row = 2*(lane % 4) + (i & 1)` with the second pair offset by 8 and
+`col = lane >> 2`. That supports the current physical-tile decoder, but does
+not prove the producer's spatial reorder.
+
+The next high-value dynamic route is to capture the *actual* JIT module rather
+than search the PE for an ELF blob. CUPTI's module-resource callback exposes a
+JIT-loaded CUDA binary, and its PC records include `cubinCrc`, `pcOffset`, and
+`functionName` for matching a sampled PC back to a function. See the [CUPTI
+SASS source-correlation documentation](https://docs.nvidia.com/cuda/cupti/main/main.html).
+If the D3D12/NGX path is visible to CUPTI, this gives the exact runtime CUBIN;
+if not, the fallback is a Linux CUDA host or NVBit experiment. [NVBit](https://github.com/NVlabs/NVBit)
+can inspect and inject calls before/after SASS instructions in a loaded
+precompiled kernel, but its published requirements are Linux-oriented and it
+is not yet a drop-in solution for this Windows D3D12 carrier.
+
+For offline SM120 patching, [cubit](https://github.com/kacper-daftcode/cubit)
+is now the most relevant public tool: it advertises SM120 disassembly,
+round-trip assembly, and ELF-preserving cubin patching. It should first be
+validated on our extracted CUBIN with a no-op round-trip, then used to insert
+a debug store only in a disposable copy. Any patched kernel must be validated
+with an independent disassembly and a 5080 numeric probe; SASS scheduling and
+hidden ABI metadata are part of correctness.
