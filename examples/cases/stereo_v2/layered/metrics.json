@@ -1,0 +1,888 @@
+{
+  "schema": "layered_stereo_v2",
+  "harness_sha256": "28963cb2c41988bd74eda31d89014e09d2e979f41dbdb751321376a55e49c47d",
+  "geometry": "background disparity 4, foreground disparity 4+gap; independent two-layer right render",
+  "protocol": "left reset with zero motion, right non-reset with per-frame geometric motion; reset control uses current only",
+  "limitations": [
+    "whole carrier includes DLAA and Feature18; no isolated Feature18 attribution",
+    "synthetic opaque rectangles; no generalization claim"
+  ],
+  "records": [
+    {
+      "case": "smooth_8",
+      "internal_pixels": 1280,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.1684756875038147,
+            "rmse": 0.24008621275424957
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.0024374956265091896,
+            "rmse": 0.0034380629658699036
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.16448931396007538,
+            "rmse": 0.23143579065799713
+          },
+          "visible": {
+            "mae": 0.00884080771356821,
+            "rmse": 0.014852168038487434
+          },
+          "boundary": {
+            "mae": 0.0071454779244959354,
+            "rmse": 0.008210222236812115
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.16448931396007538,
+            "rmse": 0.23143579065799713
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.15882112085819244,
+            "rmse": 0.22232785820960999
+          },
+          "visible": {
+            "mae": 0.010754771530628204,
+            "rmse": 0.019215714186429977
+          },
+          "boundary": {
+            "mae": 0.008676952682435513,
+            "rmse": 0.01047868374735117
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.15882112085819244,
+            "rmse": 0.22232785820960999
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.008290041238069534,
+            "rmse": 0.01040171179920435
+          },
+          "visible": {
+            "mae": 0.010085673071444035,
+            "rmse": 0.01857619918882847
+          },
+          "boundary": {
+            "mae": 0.008051183074712753,
+            "rmse": 0.009437346830964088
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.008290041238069534,
+            "rmse": 0.01040171179920435
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.006637654732912779,
+            "rmse": 0.008701242506504059
+          },
+          "visible": {
+            "mae": 0.008369923569262028,
+            "rmse": 0.014199692755937576
+          },
+          "boundary": {
+            "mae": 0.0062971157021820545,
+            "rmse": 0.0077070570550858974
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.006637654732912779,
+            "rmse": 0.008701242506504059
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        }
+      }
+    },
+    {
+      "case": "smooth_16",
+      "internal_pixels": 2560,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.16939236223697662,
+            "rmse": 0.24062533676624298
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.0046041617169976234,
+            "rmse": 0.0065833935514092445
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.1577228605747223,
+            "rmse": 0.22139650583267212
+          },
+          "visible": {
+            "mae": 0.01138574443757534,
+            "rmse": 0.020439794287085533
+          },
+          "boundary": {
+            "mae": 0.009294453077018261,
+            "rmse": 0.01110078301280737
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.1577228605747223,
+            "rmse": 0.22139650583267212
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.16240856051445007,
+            "rmse": 0.2279340922832489
+          },
+          "visible": {
+            "mae": 0.008953923359513283,
+            "rmse": 0.014624793082475662
+          },
+          "boundary": {
+            "mae": 0.007032962050288916,
+            "rmse": 0.008002148941159248
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.16240856051445007,
+            "rmse": 0.2279340922832489
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.008930857293307781,
+            "rmse": 0.01153799332678318
+          },
+          "visible": {
+            "mae": 0.009854044765233994,
+            "rmse": 0.017742367461323738
+          },
+          "boundary": {
+            "mae": 0.007791650015860796,
+            "rmse": 0.0089555149897933
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.008930857293307781,
+            "rmse": 0.01153799332678318
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.010689912363886833,
+            "rmse": 0.013585453853011131
+          },
+          "visible": {
+            "mae": 0.009654137305915356,
+            "rmse": 0.01494881696999073
+          },
+          "boundary": {
+            "mae": 0.007899191230535507,
+            "rmse": 0.008795774541795254
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.010689912363886833,
+            "rmse": 0.013585453853011131
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.0013541659573093057,
+            "rmse": 0.0018645543605089188
+          }
+        }
+      }
+    },
+    {
+      "case": "stripes_8",
+      "internal_pixels": 1280,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.10666666179895401,
+            "rmse": 0.18908220529556274
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.10000000149011612,
+            "rmse": 0.17500001192092896
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.10917076468467712,
+            "rmse": 0.1720627397298813
+          },
+          "visible": {
+            "mae": 0.017283400520682335,
+            "rmse": 0.027697555720806122
+          },
+          "boundary": {
+            "mae": 0.07717039436101913,
+            "rmse": 0.1424679160118103
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.10917076468467712,
+            "rmse": 0.1720627397298813
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.1004953682422638,
+            "rmse": 0.16984917223453522
+          },
+          "visible": {
+            "mae": 0.01732034422457218,
+            "rmse": 0.02829555608332157
+          },
+          "boundary": {
+            "mae": 0.07591351866722107,
+            "rmse": 0.1427273005247116
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.1004953682422638,
+            "rmse": 0.16984917223453522
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.1041843518614769,
+            "rmse": 0.16564476490020752
+          },
+          "visible": {
+            "mae": 0.017530234530568123,
+            "rmse": 0.02864420972764492
+          },
+          "boundary": {
+            "mae": 0.07718075066804886,
+            "rmse": 0.1417226344347
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.1041843518614769,
+            "rmse": 0.16564476490020752
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.10556671023368835,
+            "rmse": 0.1711275279521942
+          },
+          "visible": {
+            "mae": 0.017926592379808426,
+            "rmse": 0.028860388323664665
+          },
+          "boundary": {
+            "mae": 0.07600864768028259,
+            "rmse": 0.1423160433769226
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.10556671023368835,
+            "rmse": 0.1711275279521942
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        }
+      }
+    },
+    {
+      "case": "stripes_16",
+      "internal_pixels": 2560,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.15666666626930237,
+            "rmse": 0.2254532426595688
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.11666666716337204,
+            "rmse": 0.18902161717414856
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.14630930125713348,
+            "rmse": 0.2036399245262146
+          },
+          "visible": {
+            "mae": 0.017510095611214638,
+            "rmse": 0.029759380966424942
+          },
+          "boundary": {
+            "mae": 0.07653176784515381,
+            "rmse": 0.14281699061393738
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.14630930125713348,
+            "rmse": 0.2036399245262146
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.1473851501941681,
+            "rmse": 0.20665517449378967
+          },
+          "visible": {
+            "mae": 0.018116630613803864,
+            "rmse": 0.029687561094760895
+          },
+          "boundary": {
+            "mae": 0.07655005902051926,
+            "rmse": 0.14187172055244446
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.1473851501941681,
+            "rmse": 0.20665517449378967
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.12285315245389938,
+            "rmse": 0.17740648984909058
+          },
+          "visible": {
+            "mae": 0.01843911223113537,
+            "rmse": 0.031670134514570236
+          },
+          "boundary": {
+            "mae": 0.07688789814710617,
+            "rmse": 0.14151771366596222
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.12285315245389938,
+            "rmse": 0.17740648984909058
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.12134196609258652,
+            "rmse": 0.1809903234243393
+          },
+          "visible": {
+            "mae": 0.018669085577130318,
+            "rmse": 0.0312725268304348
+          },
+          "boundary": {
+            "mae": 0.07649733871221542,
+            "rmse": 0.14140650629997253
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.12134196609258652,
+            "rmse": 0.1809903234243393
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.06666667014360428,
+            "rmse": 0.1428869068622589
+          }
+        }
+      }
+    },
+    {
+      "case": "stone_8",
+      "internal_pixels": 1280,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.20707909762859344,
+            "rmse": 0.2791896462440491
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.20343562960624695,
+            "rmse": 0.27299821376800537
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.18561077117919922,
+            "rmse": 0.250670462846756
+          },
+          "visible": {
+            "mae": 0.03136955946683884,
+            "rmse": 0.0476531945168972
+          },
+          "boundary": {
+            "mae": 0.16526328027248383,
+            "rmse": 0.22117574512958527
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.18561077117919922,
+            "rmse": 0.250670462846756
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.18775993585586548,
+            "rmse": 0.2537183463573456
+          },
+          "visible": {
+            "mae": 0.03122125007212162,
+            "rmse": 0.047213125973939896
+          },
+          "boundary": {
+            "mae": 0.16552677750587463,
+            "rmse": 0.22411440312862396
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.18775993585586548,
+            "rmse": 0.2537183463573456
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.18948589265346527,
+            "rmse": 0.2534376382827759
+          },
+          "visible": {
+            "mae": 0.0319368876516819,
+            "rmse": 0.04839125648140907
+          },
+          "boundary": {
+            "mae": 0.16443467140197754,
+            "rmse": 0.22045551240444183
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.18948589265346527,
+            "rmse": 0.2534376382827759
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.1918422132730484,
+            "rmse": 0.25627240538597107
+          },
+          "visible": {
+            "mae": 0.02955414354801178,
+            "rmse": 0.04503091797232628
+          },
+          "boundary": {
+            "mae": 0.16646035015583038,
+            "rmse": 0.22546984255313873
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.1918422132730484,
+            "rmse": 0.25627240538597107
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        }
+      }
+    },
+    {
+      "case": "stone_16",
+      "internal_pixels": 2560,
+      "scores": {
+        "nearest": {
+          "internal": {
+            "mae": 0.21012872457504272,
+            "rmse": 0.2814866900444031
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background": {
+          "internal": {
+            "mae": 0.2038220316171646,
+            "rmse": 0.2724814713001251
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "nearest_history_raw": {
+          "internal": {
+            "mae": 0.18889717757701874,
+            "rmse": 0.2544199228286743
+          },
+          "visible": {
+            "mae": 0.03130533546209335,
+            "rmse": 0.047009311616420746
+          },
+          "boundary": {
+            "mae": 0.16434113681316376,
+            "rmse": 0.22021964192390442
+          }
+        },
+        "nearest_history_local": {
+          "internal": {
+            "mae": 0.18889717757701874,
+            "rmse": 0.2544199228286743
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "nearest_reset_raw": {
+          "internal": {
+            "mae": 0.18904699385166168,
+            "rmse": 0.254803866147995
+          },
+          "visible": {
+            "mae": 0.030206743627786636,
+            "rmse": 0.045678310096263885
+          },
+          "boundary": {
+            "mae": 0.1657119244337082,
+            "rmse": 0.22452832758426666
+          }
+        },
+        "nearest_reset_local": {
+          "internal": {
+            "mae": 0.18904699385166168,
+            "rmse": 0.254803866147995
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background_history_raw": {
+          "internal": {
+            "mae": 0.18821294605731964,
+            "rmse": 0.2509629428386688
+          },
+          "visible": {
+            "mae": 0.032149724662303925,
+            "rmse": 0.04850205034017563
+          },
+          "boundary": {
+            "mae": 0.16399537026882172,
+            "rmse": 0.2198602259159088
+          }
+        },
+        "background_history_local": {
+          "internal": {
+            "mae": 0.18821294605731964,
+            "rmse": 0.2509629428386688
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        },
+        "background_reset_raw": {
+          "internal": {
+            "mae": 0.19142837822437286,
+            "rmse": 0.2549841105937958
+          },
+          "visible": {
+            "mae": 0.030503422021865845,
+            "rmse": 0.046394236385822296
+          },
+          "boundary": {
+            "mae": 0.16478295624256134,
+            "rmse": 0.22334730625152588
+          }
+        },
+        "background_reset_local": {
+          "internal": {
+            "mae": 0.19142837822437286,
+            "rmse": 0.2549841105937958
+          },
+          "visible": {
+            "mae": 0.0,
+            "rmse": 0.0
+          },
+          "boundary": {
+            "mae": 0.1727583259344101,
+            "rmse": 0.23558245599269867
+          }
+        }
+      }
+    }
+  ]
+}

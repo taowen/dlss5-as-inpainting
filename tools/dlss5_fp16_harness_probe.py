@@ -68,7 +68,12 @@ def run_harness(
     frames: list[tuple[Path, int]],
     output: Path,
     extra_args: list[str] | None = None,
+    frame_motion: list[Path] | None = None,
+    frame_depth: list[Path] | None = None,
 ) -> None:
+    for planes in (frame_motion, frame_depth):
+        if planes is not None and len(planes) != len(frames):
+            raise ValueError("per-frame plane count must match frames")
     command = [
         str(harness),
         "--width",
@@ -107,7 +112,14 @@ def run_harness(
         ready = read_line()
         if not ready.startswith("READY"):
             raise RuntimeError(f"unexpected harness setup response: {ready}")
-        for color, reset in frames:
+        for index, (color, reset) in enumerate(frames):
+            for command_name, planes in (("MOTION", frame_motion), ("DEPTH", frame_depth)):
+                if planes is not None:
+                    process.stdin.write(f"{command_name} {planes[index].resolve()}\n")
+                    process.stdin.flush()
+                    response = read_line()
+                    if response != f"{command_name}_OK":
+                        raise RuntimeError(f"unexpected plane response: {response}")
             process.stdin.write(f"FRAME {color} 0 0 {reset}\n")
             process.stdin.flush()
             response = read_line()

@@ -1,0 +1,19 @@
+{
+  "shift_left_pixels": 8,
+  "geometric_current_to_previous_x": 8,
+  "scores": {
+    "0": {
+      "overlap_mae": 0.0798148512840271,
+      "overlap_rmse": 0.10939193516969681
+    },
+    "8": {
+      "overlap_mae": 0.030288923531770706,
+      "overlap_rmse": 0.04610950127243996
+    },
+    "-8": {
+      "overlap_mae": 0.07935865223407745,
+      "overlap_rmse": 0.10900398343801498
+    }
+  },
+  "caveat": "photometric score includes neural appearance changes; ranking alone cannot prove native MV convention"
+}
