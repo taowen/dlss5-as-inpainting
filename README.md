@@ -137,3 +137,6 @@ The next layers are intentionally not hidden behind the current model API:
 - expand native-pair distillation beyond the current public fixtures;
 - recover the remaining private front producer before making any stronger
   native-equivalence claim.
+
+The RTX 5080 driver was upgraded from 616.56 to 616.64 and re-tested; see
+[`docs/DLSS5_DRIVER_61664_REGRESSION.md`](docs/DLSS5_DRIVER_61664_REGRESSION.md).
