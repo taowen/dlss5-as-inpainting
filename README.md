@@ -1,5 +1,7 @@
 # DLSS5 as Inpainting
 
+For an English overview of the findings, read [DLSS5 for Stereo Disocclusion Repair: Findings](docs/DLSS5_STEREO_CONCLUSIONS_EN.md).
+
 当前立体视觉改进方案见 [Stereo Pipeline V2](docs/STEREO_PIPELINE_V2.md)：共享背景补全、双眼一致渲染、DLSS5 增强与局部修复的对照验证。
 
 V2 第一阶段已完成：[内部遮挡实验结果](docs/STEREO_V2_RESULTS.md)，包含六组隐藏背景真值对照与逐帧 MV 测试。
